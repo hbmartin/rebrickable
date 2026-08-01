@@ -1,0 +1,121 @@
+[project]
+name = "rebrickable"
+version = "1.0.0"
+description = "Python wrapper for rebrickable API."
+keywords = ["rebrickable", "lego", "cad", "3d", "modeling", "parts", "bricks"]
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["COPYING"]
+authors = [
+    { name = "Harold Martin", email = "harold.martin@gmail.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Artistic Software",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "httpx2>=2.9.1",
+    "platformdirs>=4.3.8",
+    "progress>=1.6.1",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+visual-compare = [
+    "pillow>=11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hbmartin/rebrickable"
+Repository = "https://github.com/hbmartin/rebrickable"
+Documentation = "https://hbmartin.github.io/rebrickable/"
+Changelog = "https://github.com/hbmartin/rebrickable/releases"
+
+[project.scripts]
+rebrickable = "rebrickable.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.5",
+    "ty>=0.0.21",
+    "pyrefly>=0.55.0",
+    "deptry>=0.23.0",
+    "hypothesis>=6.130",
+    "lizard>=1.23.0",
+    "memory-profiler>=0.61.0",
+    "psutil>=7.0.0",
+    "pyroma>=5.0.1",
+    "datamodel-code-generator>=0.71.0",
+]
+docs = [
+    "mkdocstrings-python>=2.0.5",
+    "zensical>=0.0.47",
+]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints", ".mypy_cache", ".nox", ".pants.d", ".pyenv", ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox", ".venv", ".vscode", "__pypackages__", "_build", "buck-out", "build", "dist", "node_modules", "setup.py", "site-packages", "venv"]
+
+line-length = 88
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "CPY001", "D105", "D107", "D203", "D212", "D213", "EM101", "PLR2004", "T201"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ARG001", "ARG005", "D103", "D104", "DTZ003", "ERA001", "F403", "F405", "FBT002", "G004", "N802", "PLC0415", "PLR2004", "PLW1510", "PT011", "PT013", "PTH110", "PTH118", "PTH119", "PTH122", "PTH123", "PTH207", "S101", "S102", "S311", "S603", "S607", "SIM115"]
+"benchmarks/*.py" = ["INP001"]
+"benchmarks/memory_profile.py" = ["F821"]
+"examples/*.py" = ["D103", "F403", "F405", "INP001", "S311"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.coverage.paths]
+source = ["ldraw", "*/site-packages"]
+tests = ["tests", "*/tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["ldraw", "tests"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 97
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+]
+
+[tool.uv]
+package = true
+
+[tool.pydoclint]
+exclude = '\.git|\.nox|noxfile.py'
+
+[tool.deptry]
+extend_exclude = ["benchmarks"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests (run with '--integration')",
+    "slow: marks tests as slow-running",
+]
