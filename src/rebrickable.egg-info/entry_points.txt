@@ -1,0 +1,2 @@
+[console_scripts]
+rebrickable = rebrickable.cli:main

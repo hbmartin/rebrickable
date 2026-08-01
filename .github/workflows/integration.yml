@@ -1,0 +1,79 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        ldraw-version: ["2018-02", "complete"]
+      fail-fast: false
+    
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+    
+    - name: Create uv environment
+      run: uv venv
+    
+    - name: Install dependencies
+      run: uv sync --all-groups --locked
+    
+    - name: Download LDraw library (${{ matrix.ldraw-version }})
+      run: |
+        if [ "${{ matrix.ldraw-version }}" = "complete" ]; then
+          uv run ldraw download --yes
+        else
+          uv run ldraw download --version ${{ matrix.ldraw-version }} --yes
+        fi
+      timeout-minutes: 30
+    
+    - name: Generate library modules
+      run: uv run ldraw generate --yes
+      timeout-minutes: 15
+    
+    - name: Run integration tests
+      run: uv run pytest --integration -v --tb=short --durations=10
+      timeout-minutes: 45
+    
+    - name: Test CLI commands
+      run: |
+        # Test basic CLI functionality
+        uv run ldraw --help
+        uv run ldraw config
+        uv run ldraw version
+      timeout-minutes: 5
+    
+    - name: Test example scripts
+      run: |
+        cd examples
+        # A hang fails the step via timeout's exit 124; LDraw stdout is
+        # discarded to keep the log readable, stderr still shows failures.
+        timeout 60 uv run python stairs.py > /dev/null
+        timeout 60 uv run python figure.py > /dev/null
+      timeout-minutes: 10
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: integration-test-results-py${{ matrix.python-version }}-${{ matrix.ldraw-version }}
+        path: |
+          *.log
+          test-results.xml
+        retention-days: 30
