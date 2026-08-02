@@ -452,5 +452,5 @@ async def test_client_remaining_pacing_retry_close_and_models(monkeypatch) -> No
 
 
 class RaisingTransport:
-    async def request(self, method, url, *, headers, params=None, data=None):
+    async def request(self, method, url, *, headers, params=None, data=None, json=None):
         raise OSError("offline")

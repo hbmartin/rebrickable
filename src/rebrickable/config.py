@@ -37,6 +37,7 @@ class Config:
     pool_timeout: float = 10.0
     request_interval: float = 1.0
     max_retries: int = 3
+    max_retry_after: float = 300.0
     refresh_concurrency: int = 4
     snapshot_retention: int = 1
     mapping_overrides_path: Path | None = None
@@ -55,6 +56,8 @@ class Config:
             raise ValueError("request_interval must be non-negative")
         if self.max_retries < 0:
             raise ValueError("max_retries must be non-negative")
+        if self.max_retry_after <= 0:
+            raise ValueError("max_retry_after must be positive")
         if self.refresh_concurrency < 1:
             raise ValueError("refresh_concurrency must be positive")
         if self.snapshot_retention < 1:

@@ -1,10 +1,10 @@
-# ruff: noqa: ANN003, ANN202, ARG001, ARG002, ARG005, PT018
+# ruff: noqa: ANN003, ANN202, ARG001, ARG002, ARG005
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx2
 import pytest
@@ -189,7 +189,7 @@ class SequenceTransport:
         self.values = list(values)
         self.calls = 0
 
-    async def request(self, method, url, *, headers, params=None, data=None):
+    async def request(self, method, url, *, headers, params=None, data=None, json=None):
         self.calls += 1
         value = self.values.pop(0)
         if isinstance(value, BaseException):
@@ -255,11 +255,130 @@ async def test_transport_retries_errors_validation_and_close(monkeypatch) -> Non
     assert "secret" not in str(captured.value)
 
 
+@pytest.mark.asyncio
+async def test_retry_after_cap_raises_instead_of_sleeping() -> None:
+    transport = FakeTransport(
+        FakeResponse({}, status_code=429, headers={"retry-after": "99999"})
+    )
+    api = RebrickableClient(
+        api_key="key",
+        config=Config(request_interval=0, max_retries=3, max_retry_after=10),
+        transport=transport,
+    )
+    with pytest.raises(ApiThrottledError) as captured:
+        await api.get_part("3001")
+    assert captured.value.retry_after == 99999
+    assert len(transport.requests) == 1
+    assert api._throttle_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_redirect_and_non_json_success_are_structured_errors() -> None:
+    redirecting = client(
+        FakeTransport(
+            FakeResponse(
+                {}, status_code=302, headers={"location": "https://rebrickable.com/x"}
+            )
+        )
+    )
+    with pytest.raises(ApiError) as captured:
+        await redirecting.get_part("3001")
+    assert captured.value.status == 302
+
+    class HtmlResponse:
+        status_code = 200
+        headers: ClassVar[dict[str, str]] = {}
+        text = "<html>proxy interstitial</html>"
+
+        def json(self) -> Any:
+            raise ValueError("not json")
+
+    class HtmlTransport:
+        async def request(
+            self, method, url, *, headers, params=None, data=None, json=None
+        ):
+            return HtmlResponse()
+
+    broken = RebrickableClient(
+        api_key="key",
+        config=Config(request_interval=0, max_retries=0),
+        transport=HtmlTransport(),
+    )
+    with pytest.raises(ApiDecodeError, match="not valid JSON"):
+        await broken.get_part("3001")
+
+
+@pytest.mark.asyncio
+async def test_send_json_body_validation_and_wire_shape() -> None:
+    transport = FakeTransport(FakeResponse([{"set_num": "1-1"}]))
+    api = client(transport)
+    path = {"user_token": "user-secret"}
+    with pytest.raises(TypeError, match="mutually exclusive"):
+        await api._send(
+            "users_sets_sync_create",
+            path_values=path,
+            form={"set_num": "1-1"},
+            json_body=[],
+        )
+    with pytest.raises(TypeError, match="missing required parameters: set_num"):
+        await api._send("users_sets_create", path_values=path, form={"quantity": 1})
+    with pytest.raises(TypeError, match="does not accept a JSON body"):
+        await api._send("lego_parts_list", json_body=[])
+    with pytest.raises(TypeError, match="unsupported parameters: bogus"):
+        await api._send(
+            "users_sets_sync_create", path_values=path, json_body=[{"bogus": 1}]
+        )
+    with pytest.raises(TypeError, match="missing required parameters: set_num"):
+        await api._send(
+            "users_sets_sync_create", path_values=path, json_body=[{"quantity": 1}]
+        )
+    response = await api._send(
+        "users_sets_sync_create",
+        path_values=path,
+        json_body=[{"set_num": "1-1", "quantity": 1}],
+    )
+    assert response.status_code == 200
+    method, url, captured = transport.requests[-1]
+    assert method == "POST"
+    assert url.endswith("/users/user-secret/sets/sync/")
+    assert captured["json"] == [{"set_num": "1-1", "quantity": 1}]
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_pagination_cycle_and_per_call_token_redaction() -> None:
+    loop_page = {
+        "count": 0,
+        "next": "https://rebrickable.com/api/v3/users/user-secret/sets/?page=2",
+        "previous": None,
+        "results": [],
+    }
+    looping = client(FakeTransport(FakeResponse(loop_page), FakeResponse(loop_page)))
+    with pytest.raises(PaginationCycleError) as cycle:
+        async for _ in looping.iter_user_sets():
+            pass
+    assert "user-secret" not in str(cycle.value)
+    assert "<redacted>" in str(cycle.value)
+
+    tokenless = RebrickableClient(
+        api_key="key",
+        config=Config(request_interval=0, max_retries=0),
+        transport=FakeTransport(
+            FakeResponse({"detail": "unknown token percall-secret"}, status_code=404)
+        ),
+    )
+    with pytest.raises(ApiError) as captured:
+        await tokenless.list_user_sets(user_token="percall-secret")
+    assert "percall-secret" not in str(captured.value)
+    assert "<redacted>" in str(captured.value)
+
+
 def test_retry_after_decode_and_user_token_edges() -> None:
-    future = format_datetime(datetime.now(UTC) + timedelta(seconds=30))
-    response = FakeResponse({}, headers={"retry-after": future})
-    delay = RebrickableClient._retry_after(response, "")
-    assert delay is not None and 0 <= delay <= 31
+    fixed = datetime(2026, 8, 1, tzinfo=UTC)
+    header = format_datetime(fixed + timedelta(seconds=30))
+    response = FakeResponse({}, headers={"retry-after": header})
+    delay = RebrickableClient._retry_after(response, "", now=fixed)
+    assert delay == 30.0
     assert (
         RebrickableClient._retry_after(
             FakeResponse({}, headers={"retry-after": "nonsense"}), "try later"

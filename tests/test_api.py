@@ -34,9 +34,13 @@ class FakeTransport:
         self.responses = list(responses)
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
 
-    async def request(self, method, url, *, headers, params=None, data=None):
+    async def request(self, method, url, *, headers, params=None, data=None, json=None):
         self.requests.append(
-            (method, url, {"headers": headers, "params": params, "data": data})
+            (
+                method,
+                url,
+                {"headers": headers, "params": params, "data": data, "json": json},
+            )
         )
         return self.responses.pop(0)
 
