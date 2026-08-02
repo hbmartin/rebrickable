@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 import aiosqlite
 
@@ -28,16 +28,17 @@ from rebrickable.catalog.models import (
 from rebrickable.errors import EntityNotFoundError
 from rebrickable.types import RelationshipType
 
-if TYPE_CHECKING:
-    from rebrickable.session import RebrickableSession
-
 T = TypeVar("T")
+
+
+class _SessionProtocol(Protocol):
+    async def _connection(self) -> aiosqlite.Connection: ...
 
 
 class Repository(Generic[T]):
     def __init__(
         self,
-        session: RebrickableSession,
+        session: _SessionProtocol,
         *,
         kind: str,
         table: str,
@@ -130,7 +131,7 @@ def _color(row: aiosqlite.Row) -> Color:
 
 
 class PartsRepository(Repository[Part]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="part",
@@ -327,7 +328,7 @@ class PartsRepository(Repository[Part]):
 
 
 class SetsRepository(Repository[Set]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="set",
@@ -354,7 +355,7 @@ class SetsRepository(Repository[Set]):
 
 
 class MinifigsRepository(Repository[Minifig]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="minifig",
@@ -381,7 +382,7 @@ class MinifigsRepository(Repository[Minifig]):
 
 
 class ThemesRepository(Repository[Theme]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="theme",
@@ -447,14 +448,14 @@ class ThemesRepository(Repository[Theme]):
 
 
 class ColorsRepository(Repository[Color]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session, kind="color", table="colors", key="id", order="id", factory=_color
         )
 
 
 class CategoriesRepository(Repository[PartCategory]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="part category",
@@ -466,7 +467,7 @@ class CategoriesRepository(Repository[PartCategory]):
 
 
 class ElementsRepository(Repository[Element]):
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         super().__init__(
             session,
             kind="element",
@@ -491,7 +492,7 @@ class ElementsRepository(Repository[Element]):
 
 
 class InventoriesRepository:
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: _SessionProtocol) -> None:
         self._session = session
 
     async def versions(self, owner_num: str) -> tuple[InventoryVersion, ...]:
