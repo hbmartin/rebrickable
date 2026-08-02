@@ -138,7 +138,6 @@ source = ["rebrickable"]
 [tool.coverage.report]
 show_missing = true
 fail_under = 97
-exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

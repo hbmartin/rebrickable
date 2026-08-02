@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-EXPECTED_SHA256 = "91b49e310f8fb2db4ff7474e2775921897e10319a71ec053cac61f3a40fa7cb6"
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 COMPATIBILITY_OVERLAY = {
     "lego_parts_list": {"inc_part_details": "boolean"},
@@ -91,6 +91,16 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
     return "\n".join(lines)
 
 
+def expected_sha256(registry: Path) -> str | None:
+    """Read the checksum the current registry was generated from."""
+    if not registry.is_file():
+        return None
+    match = re.search(
+        r'OPENAPI_SHA256 = "([0-9a-f]{64})"', registry.read_text(encoding="utf-8")
+    )
+    return match.group(1) if match else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -99,7 +109,8 @@ def main() -> int:
     args = parser.parse_args()
     raw = args.input.read_bytes()
     checksum = hashlib.sha256(raw).hexdigest()
-    if checksum != EXPECTED_SHA256 and not args.allow_new_checksum:
+    expected = expected_sha256(args.registry)
+    if checksum != expected and not args.allow_new_checksum:
         raise SystemExit(f"unexpected OpenAPI checksum: {checksum}")
     document = json.loads(raw)
     items = operations(document)
