@@ -104,6 +104,12 @@ def test_csv_formula_injection_is_escaped() -> None:
     assert to_csv(({"b": 2, "a": "=1+1"},)) == "a,b\r\n'=1+1,2\r\n"
 
 
+def test_to_csv_none_missing_and_nested_cells() -> None:
+    assert to_csv(({"a": None, "b": 1}, {"b": 2})) == "a,b\r\n,1\r\n,2\r\n"
+    assert to_csv(({"data": {"k": [1]}},)) == 'data\r\n"{""k"": [1]}"\r\n'
+    assert to_csv(({"v": [1, 2]},)) == 'v\r\n"[1, 2]"\r\n'
+
+
 def test_cli_url_and_api_spec(capsys) -> None:
     assert main(["url", "part", "3001"]) == 0
     assert capsys.readouterr().out == "https://rebrickable.com/parts/3001/\n"

@@ -30,6 +30,8 @@ async def search(
         raise ValueError("offset must not be negative")
     normalized = " ".join(query.casefold().split())
     active_filters = filters or SearchFilters()
+    if active_filters.include_subthemes and active_filters.theme_id is None:
+        raise ValueError("include_subthemes requires theme_id")
     if not normalized and kinds is None and active_filters == SearchFilters():
         raise ValueError("empty search requires a kind or filter")
     conditions: list[str] = []
@@ -55,10 +57,9 @@ async def search(
     if active_filters.theme_id is not None:
         if active_filters.include_subthemes:
             ctes.append(
-                "theme_tree(id, depth) AS ("
-                "SELECT id, 0 FROM themes WHERE id=? UNION ALL "
-                "SELECT t.id, tt.depth + 1 FROM themes t "
-                "JOIN theme_tree tt ON t.parent_id=tt.id WHERE tt.depth < 100)"
+                "theme_tree(id) AS ("
+                "SELECT id FROM themes WHERE id=? UNION "
+                "SELECT t.id FROM themes t JOIN theme_tree tt ON t.parent_id=tt.id)"
             )
             cte_values.append(active_filters.theme_id)
             conditions.append("theme_id IN (SELECT id FROM theme_tree)")

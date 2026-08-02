@@ -80,6 +80,12 @@ def to_json(value: Any, *, schema: str = "rebrickable") -> str:
     )
 
 
+def _csv_cell(value: Any) -> str:
+    if isinstance(value, Mapping | list):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return "" if value is None else str(value)
+
+
 def to_csv(value: Any) -> str:
     """Serialize a record or record sequence with deterministic columns."""
     data = _json_value(value)
@@ -94,11 +100,7 @@ def to_csv(value: Any) -> str:
     for item in normalized:
         writer.writerow(
             {
-                column: escape_csv_formula(
-                    json.dumps(item.get(column), ensure_ascii=False, sort_keys=True)
-                    if isinstance(item.get(column), Mapping | list)
-                    else str(item.get(column, ""))
-                )
+                column: escape_csv_formula(_csv_cell(item.get(column)))
                 for column in columns
             }
         )

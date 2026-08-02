@@ -7,7 +7,7 @@ API commands are read-only:
 rebrickable status [--json]
 rebrickable refresh [--force] [--json]
 rebrickable [--format table|json|csv|yaml] search [QUERY] [FILTERS] [--offset N]
-rebrickable part PART_NUM [--usage | --sets | --relationships] [--color-id ID]
+rebrickable part PART_NUM [--usage [--color-id ID] | --sets [--color-id ID] [--include-spares] [--limit N] [--offset N] | --relationships]
 rebrickable set SET_NUM [--inventory | --bom] [--version N] [--include-spares]
 rebrickable minifig FIG_NUM [--inventory | --bom] [--version N] [--include-spares]
 rebrickable catalog {path|doctor|versions|diff} ...
@@ -22,14 +22,19 @@ Machine JSON is schema-versioned and deterministic; CSV uses RFC 4180 line
 endings. Machine output alone goes to stdout. Refresh progress and diagnostics go
 to stderr. Exit statuses are fixed: `0` success, `1` unexpected failure, `2`
 usage or invalid input, `3` missing catalog/entity/data, `4` incomplete
-translation, and `5` API/authentication/throttling failure.
+translation, and `5` API/authentication/throttling failure. Flags a `part` mode
+does not use (for example `--limit` outside `--sets`) and `--include-subthemes`
+without `--theme-id` are rejected with the invalid-input status rather than
+silently ignored. The global `--version` prints the package version; the
+`set`/`minifig` `--version N` option instead selects an inventory version.
 
-Search accepts year, theme, recursive-subtheme, part-count, category, material,
-limit, and offset filters. `catalog doctor` reports Python/SQLite/package
-versions, catalog diagnostics, API-key presence without revealing the key, and
-conflicting `pyrebrickable` installations. Live `api` commands require
-`REBRICKABLE_API_KEY` or `api_key` in configuration and never mutate a user
-account.
+Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
+part-count, category, material, limit, and offset filters. `catalog doctor`
+reports Python/SQLite/package versions, catalog diagnostics, API-key presence
+without revealing the key, and conflicting `pyrebrickable` installations.
+`catalog versions` exits with missing-data status for an unknown owner. Live
+`api` commands require `REBRICKABLE_API_KEY` or `api_key` in configuration and
+never mutate a user account.
 
 `translate-ldraw` requires `rebrickable[ldraw]`. When that extra is missing, the
 command prints an installation diagnostic and exits with invalid-input status.

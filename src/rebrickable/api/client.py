@@ -74,7 +74,6 @@ from rebrickable.errors import (
 )
 
 T = TypeVar("T", bound=BaseModel)
-QueryValue = str | int | float | bool | None
 MutationRetryPolicy = Callable[[str], bool]
 
 _TRANSIENT = {500, 502, 503, 504}
@@ -215,7 +214,7 @@ class RebrickableClient:
         operation_id: str,
         *,
         path_values: Mapping[str, str | int] | None = None,
-        query: Mapping[str, QueryValue] | None = None,
+        query: Mapping[str, object] | None = None,
         form: Mapping[str, Any] | None = None,
         json_body: list[dict[str, Any]] | None = None,
         absolute_url: str | None = None,
@@ -360,7 +359,7 @@ class RebrickableClient:
         model: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Any = None,
+        query: Mapping[str, object] | None = None,
         form: Mapping[str, Any] | None = None,
         retry_mutation: bool = False,
     ) -> T:
@@ -404,7 +403,7 @@ class RebrickableClient:
             return tuple(
                 decode_model(
                     ApiRecord,
-                    item,
+                    item if isinstance(item, Mapping) else {"detail": item},
                     operation_id=operation_id,
                     path_template=operation.path,
                 )
@@ -448,7 +447,7 @@ class RebrickableClient:
         item: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Any = None,
+        query: Mapping[str, object] | None = None,
         absolute_url: str | None = None,
     ) -> ApiPage[T]:
         response = await self._send(
@@ -472,7 +471,7 @@ class RebrickableClient:
         item: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Any = None,
+        query: Mapping[str, object] | None = None,
     ) -> AsyncIterator[T]:
         options = dict(query or {})
         options.setdefault("page_size", 1_000)
