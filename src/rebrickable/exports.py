@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -45,7 +45,7 @@ def _json_value(value: Any) -> Any:
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
             str(key): _json_value(item)
             for key, item in value.items()
@@ -54,6 +54,14 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, tuple | list):
         return [_json_value(item) for item in value]
     return value
+
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def escape_csv_formula(value: str) -> str:
+    """Neutralize cells spreadsheets would evaluate as formulas."""
+    return f"'{value}" if value.startswith(_FORMULA_PREFIXES) else value
 
 
 def to_json(value: Any, *, schema: str = "rebrickable") -> str:
@@ -90,9 +98,11 @@ def translation_to_csv(
         )
         writer.writerow(
             {
-                "ldraw_part_num": row.ldraw_part_num,
+                "ldraw_part_num": escape_csv_formula(row.ldraw_part_num),
                 "ldraw_color_code": row.ldraw_color_code,
-                "rebrickable_part_num": row.rebrickable_part_num or "",
+                "rebrickable_part_num": escape_csv_formula(
+                    row.rebrickable_part_num or ""
+                ),
                 "rebrickable_color_id": row.rebrickable_color_id
                 if row.rebrickable_color_id is not None
                 else "",
@@ -100,8 +110,10 @@ def translation_to_csv(
                 "status": row.status.value,
                 "part_match_source": row.part_match.source.value,
                 "color_match_source": row.color_match.source.value,
-                "candidates": "|".join(candidates),
-                "notes": f"{row.part_match.explanation}; {row.color_match.explanation}",
+                "candidates": escape_csv_formula("|".join(candidates)),
+                "notes": escape_csv_formula(
+                    f"{row.part_match.explanation}; {row.color_match.explanation}"
+                ),
             },
         )
     return output.getvalue()
@@ -125,7 +137,9 @@ def catalog_bom_to_csv(rows: Iterable[BomRow]) -> str:
     writer = csv.writer(output, lineterminator="\r\n")
     writer.writerow(("part_num", "color_id", "quantity"))
     for row in rows:
-        writer.writerow((row.part.part_num, row.color.id, row.quantity))
+        writer.writerow(
+            (escape_csv_formula(row.part.part_num), row.color.id, row.quantity)
+        )
     return output.getvalue()
 
 

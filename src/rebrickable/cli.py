@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import io
+import os
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -134,14 +135,12 @@ async def _run(args: argparse.Namespace) -> int:
         return ExitCode.OK
     if args.command == "api-spec":
         resource = files("rebrickable.data").joinpath(OPENAPI_RESOURCE)
-        text = resource.read_text(encoding="utf-8")
+        raw = resource.read_bytes()
         if args.output:
-            args.output.write_text(text, encoding="utf-8")
+            args.output.write_bytes(raw)
         else:
-            parsed = json.loads(text)
-            sys.stdout.write(
-                json.dumps(parsed, sort_keys=True, separators=(",", ":")) + "\n"
-            )
+            sys.stdout.buffer.write(raw)
+            sys.stdout.flush()
         return ExitCode.OK
 
     async with await RebrickableSession.open(Config.load()) as session:
@@ -203,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     try:
         return int(asyncio.run(_run(parser.parse_args(argv))))
+    except BrokenPipeError:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except (OSError, ValueError, io.UnsupportedOperation):
+            pass
+        return int(ExitCode.OK)
     except (ValueError, argparse.ArgumentError, OptionalDependencyError) as exc:
         print(str(exc), file=sys.stderr)
         return int(ExitCode.INVALID_INPUT)

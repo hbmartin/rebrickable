@@ -111,6 +111,17 @@ def test_rebrickable_csv_parser_and_aliases() -> None:
         Bom.from_rebrickable_csv("")
 
 
+def test_bom_missing_file_and_inline_content_detection(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_csv("missing_bom.csv")
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_csv(str(tmp_path / "nope.csv"))
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_rebrickable_xml("missing_inventory.xml")
+    header_only = Bom.from_csv("Part,Color,Quantity")
+    assert header_only.items == ()
+
+
 def test_bom_file_sources_namespace_guard_and_python_snippet(tmp_path: Path) -> None:
     csv_path = tmp_path / "bom.csv"
     csv_path.write_text("Part,Color,Quantity\n3001,4,2\n")

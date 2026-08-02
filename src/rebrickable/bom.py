@@ -10,6 +10,7 @@ from pathlib import Path
 
 from defusedxml import ElementTree
 
+from rebrickable.exports import escape_csv_formula
 from rebrickable.types import (
     ColorRef,
     ColorSystem,
@@ -241,7 +242,9 @@ class Bom:
                 or item.color.system is not ColorSystem.REBRICKABLE
             ):
                 raise ValueError("custom-list export requires Rebrickable identifiers")
-            writer.writerow((item.part.value, item.color.value, item.quantity))
+            writer.writerow(
+                (escape_csv_formula(item.part.value), item.color.value, item.quantity)
+            )
         return output.getvalue()
 
 
@@ -250,8 +253,15 @@ def _read_source(source: str | Path, *, encoding: str) -> str:
         return source.read_text(encoding=encoding)
     if "\n" in source or "\r" in source:
         return source
+    looks_like_path = source.casefold().endswith((".csv", ".xml"))
     try:
         path = Path(source)
-        return path.read_text(encoding=encoding) if path.is_file() else source
+        if path.is_file():
+            return path.read_text(encoding=encoding)
     except OSError:
+        if looks_like_path:
+            raise
         return source
+    if looks_like_path:
+        raise FileNotFoundError(f"BOM source file not found: {source}")
+    return source
