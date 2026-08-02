@@ -13,12 +13,14 @@ part/color, and retains contribution paths. Cycles raise `InventoryCycleError`
 with the complete owner path.
 
 Pass `version=` to set/minifig `inventory()`, or use `session.inventories` for
-arbitrary owners. `versions()` marks the active numeric version and `diff()`
-returns typed regular/spare quantity deltas. `session.parts.used_in_sets()` and
+arbitrary owners. `versions()` marks the active numeric version and raises
+`InventoryNotFoundError` for owners with no inventories; `diff()` returns typed
+regular/spare quantity deltas. `session.parts.used_in_sets()` and
 `usage_stats()` aggregate newest inventories; relationship, variant, and
 canonical-mold helpers preserve upstream relationship types. Theme lineage and
-descendant queries are recursive but depth-bounded, and elements can be looked
-up directly by part/color.
+descendant queries are recursive, bounded, and cycle-tolerant — each theme is
+reported at most once even if snapshot data contains a parent-id cycle — and
+elements can be looked up directly by part/color.
 
 Use namespace-bearing references when identifiers cross systems:
 
@@ -43,7 +45,7 @@ canonical prefix, exact normalized name, name prefix, all-token FTS, and
 substring. Ties use kind and canonical ID. Empty browsing requires a kind or
 filter and every page is bounded.
 `SearchFilters(include_subthemes=True, theme_id=...)` recursively includes theme
-descendants.
+descendants; `theme_id` is required when `include_subthemes` is set.
 
 `CatalogState` is entirely local and reports `READY`, `MISSING`, `UNREADABLE`,
 `SCHEMA_MISMATCH`, or `IMPORT_REQUIRED`; it does not compare freshness over the
