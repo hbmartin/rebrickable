@@ -3,6 +3,7 @@
 from rebrickable.catalog.models import (
     BomContribution,
     BomRow,
+    CatalogBom,
     Color,
     Element,
     Inventory,
@@ -14,12 +15,14 @@ from rebrickable.catalog.models import (
     PartCategory,
     PartRelationship,
     Set,
+    SkippedInventory,
     Theme,
 )
 
 __all__ = [
     "BomContribution",
     "BomRow",
+    "CatalogBom",
     "Color",
     "Element",
     "Inventory",
@@ -31,5 +34,6 @@ __all__ = [
     "PartCategory",
     "PartRelationship",
     "Set",
+    "SkippedInventory",
     "Theme",
 ]

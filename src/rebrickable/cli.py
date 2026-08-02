@@ -19,7 +19,12 @@ from rebrickable.errors import (
     OptionalDependencyError,
     RebrickableError,
 )
-from rebrickable.exports import to_json, translation_table, translation_to_csv
+from rebrickable.exports import (
+    catalog_bom_to_csv,
+    to_json,
+    translation_table,
+    translation_to_csv,
+)
 from rebrickable.progress import ProgressEvent
 from rebrickable.session import RebrickableSession
 from rebrickable.types import CatalogStatus, ExitCode, MappingStatus, SearchKind
@@ -105,13 +110,12 @@ async def _entity_command(session: RebrickableSession, args: argparse.Namespace)
             identifier, include_spares=args.include_spares
         )
         if args.csv:
-            lines = ["part_num,color_id,quantity"]
-            lines.extend(
-                f"{row.part.part_num},{row.color.id},{row.quantity}" for row in bom
-            )
-            sys.stdout.write("\r\n".join(lines) + "\r\n")
+            sys.stdout.write(catalog_bom_to_csv(bom.rows))
         else:
             _print_entity(bom, json_output=args.json)
+        if bom.skipped and not args.json:
+            for item in bom.skipped:
+                print(f"skipped {item.owner_num}: {item.reason}", file=sys.stderr)
     else:
         entity = await repository.require(identifier)
         _print_entity(entity, json_output=args.json)

@@ -129,6 +129,28 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
 
 
 @pytest.mark.asyncio
+async def test_bom_skips_missing_sub_inventories(catalog_config: Config) -> None:
+    database = database_for(catalog_config)
+    connection = sqlite3.connect(database)
+    connection.execute("DELETE FROM inventories WHERE owner_num='fig-1'")
+    connection.commit()
+    connection.close()
+    async with await RebrickableSession.open(catalog_config) as session:
+        bom = await session.sets.bill_of_materials("100-1")
+        quantities = {(row.part.part_num, row.color.id): row.quantity for row in bom}
+        assert quantities == {("3001", 4): 2, ("3001", 1): 2}
+        assert len(bom.skipped) == 1
+        skipped = bom.skipped[0]
+        assert skipped.owner_num == "fig-1"
+        assert skipped.owner_path == ("100-1", "fig-1")
+        assert "fig-1" in skipped.reason
+        with pytest.raises(InventoryNotFoundError):
+            await session.sets.bill_of_materials("100-1", strict=True)
+        with pytest.raises(InventoryNotFoundError):
+            await session.sets.bill_of_materials("missing")
+
+
+@pytest.mark.asyncio
 async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
     catalog_config: Config, monkeypatch
 ) -> None:

@@ -87,7 +87,10 @@ def test_catalog_cli_commands_and_machine_streams(
     assert cli.main(["set", "100-1", "--bom", "--csv"]) == 0
     assert capsys.readouterr().out.startswith("part_num,color_id,quantity\r\n")
     assert cli.main(["set", "100-1", "--bom", "--json", "--include-spares"]) == 0
-    assert json.loads(capsys.readouterr().out)["schema"] == "rebrickable.entity"
+    bom_payload = json.loads(capsys.readouterr().out)
+    assert bom_payload["schema"] == "rebrickable.entity"
+    assert bom_payload["data"]["rows"][0]["quantity"] == 2
+    assert bom_payload["data"]["skipped"] == []
     assert cli.main(["minifig", "fig-1", "--inventory", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["data"]["owner_num"] == "fig-1"
     assert cli.main(["set", "100-1", "--csv"]) == 2

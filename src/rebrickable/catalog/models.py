@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from rebrickable.types import Provenance, RelationshipType
 from rebrickable.urls import minifig_url, part_url, set_url, theme_url
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,3 +138,23 @@ class BomRow:
     color: Color
     quantity: int
     provenance: tuple[BomContribution | Provenance, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SkippedInventory:
+    """A contained set or minifig whose own inventory could not be expanded."""
+
+    owner_num: str
+    owner_path: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogBom:
+    """Recursive BOM rows plus diagnostics for unexpandable sub-items."""
+
+    rows: tuple[BomRow, ...]
+    skipped: tuple[SkippedInventory, ...] = ()
+
+    def __iter__(self) -> Iterator[BomRow]:
+        return iter(self.rows)

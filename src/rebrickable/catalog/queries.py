@@ -9,7 +9,7 @@ import aiosqlite
 
 from rebrickable.catalog.inventory import bill_of_materials, load_inventory
 from rebrickable.catalog.models import (
-    BomRow,
+    CatalogBom,
     Color,
     Element,
     Inventory,
@@ -133,10 +133,13 @@ class SetsRepository(Repository[Set]):
         return await load_inventory(await self._session._connection(), set_num)
 
     async def bill_of_materials(
-        self, set_num: str, *, include_spares: bool = False
-    ) -> tuple[BomRow, ...]:
+        self, set_num: str, *, include_spares: bool = False, strict: bool = False
+    ) -> CatalogBom:
         return await bill_of_materials(
-            await self._session._connection(), set_num, include_spares=include_spares
+            await self._session._connection(),
+            set_num,
+            include_spares=include_spares,
+            strict=strict,
         )
 
 
@@ -155,10 +158,13 @@ class MinifigsRepository(Repository[Minifig]):
         return await load_inventory(await self._session._connection(), fig_num)
 
     async def bill_of_materials(
-        self, fig_num: str, *, include_spares: bool = False
-    ) -> tuple[BomRow, ...]:
+        self, fig_num: str, *, include_spares: bool = False, strict: bool = False
+    ) -> CatalogBom:
         return await bill_of_materials(
-            await self._session._connection(), fig_num, include_spares=include_spares
+            await self._session._connection(),
+            fig_num,
+            include_spares=include_spares,
+            strict=strict,
         )
 
 

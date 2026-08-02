@@ -24,6 +24,7 @@ from rebrickable.bridge import (
 from rebrickable.catalog import (
     BomContribution,
     BomRow,
+    CatalogBom,
     Color,
     Element,
     Inventory,
@@ -35,6 +36,7 @@ from rebrickable.catalog import (
     PartCategory,
     PartRelationship,
     Set,
+    SkippedInventory,
     Theme,
 )
 from rebrickable.config import Config
@@ -106,6 +108,7 @@ __all__ = [
     "BomRow",
     "BomValidationReport",
     "BomValidationRow",
+    "CatalogBom",
     "CatalogImportError",
     "CatalogSchemaError",
     "CatalogState",
@@ -160,6 +163,7 @@ __all__ = [
     "SearchKind",
     "SearchResult",
     "Set",
+    "SkippedInventory",
     "SubstitutionEvidence",
     "Theme",
     "TranslatedBomRow",

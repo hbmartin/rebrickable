@@ -120,7 +120,9 @@ async def test_resolution_translation_substitutions_and_facades(
         assert "LDRAW PART" in translation_table(report)
         assert "schema_version" in to_json(report)
         bom_rows = await session.sets.bill_of_materials("100-1")
-        assert catalog_bom_to_csv(bom_rows).startswith("part_num,color_id,quantity\r\n")
+        assert catalog_bom_to_csv(bom_rows.rows).startswith(
+            "part_num,color_id,quantity\r\n"
+        )
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,7 @@ async def test_repository_search_inventory_and_bom(catalog_config: Config) -> No
         bom = await session.sets.bill_of_materials("100-1")
         quantities = {(row.part.part_num, row.color.id): row.quantity for row in bom}
         assert quantities == {("3001", 1): 2, ("3001", 4): 2, ("3002", 4): 1}
+        assert bom.skipped == ()
         with_spares = await session.sets.bill_of_materials("100-1", include_spares=True)
         assert {(row.part.part_num, row.color.id): row.quantity for row in with_spares}[
             ("3002", 4)

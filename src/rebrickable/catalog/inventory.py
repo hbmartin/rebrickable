@@ -9,6 +9,7 @@ import aiosqlite
 from rebrickable.catalog.models import (
     BomContribution,
     BomRow,
+    CatalogBom,
     Color,
     Inventory,
     InventoryMinifig,
@@ -17,6 +18,7 @@ from rebrickable.catalog.models import (
     Minifig,
     Part,
     Set,
+    SkippedInventory,
 )
 from rebrickable.errors import InventoryCycleError, InventoryNotFoundError
 
@@ -148,10 +150,12 @@ async def bill_of_materials(
     owner_num: str,
     *,
     include_spares: bool = False,
-) -> tuple[BomRow, ...]:
+    strict: bool = False,
+) -> CatalogBom:
     quantities: defaultdict[tuple[str, int], int] = defaultdict(int)
     entities: dict[tuple[str, int], tuple[Part, Color]] = {}
     inventory_cache: dict[str, Inventory] = {}
+    skipped: list[SkippedInventory] = []
     contributions: defaultdict[tuple[str, int], list[BomContribution]] = defaultdict(
         list
     )
@@ -162,7 +166,13 @@ async def bill_of_materials(
         current_path = (*path, owner)
         inventory = inventory_cache.get(owner)
         if inventory is None:
-            inventory = await load_inventory(connection, owner)
+            try:
+                inventory = await load_inventory(connection, owner)
+            except InventoryNotFoundError as exc:
+                if strict or not path:
+                    raise
+                skipped.append(SkippedInventory(owner, current_path, str(exc)))
+                return
             inventory_cache[owner] = inventory
         for item in inventory.parts:
             if item.is_spare and not include_spares:
@@ -178,7 +188,7 @@ async def bill_of_materials(
             await expand(item.minifig.fig_num, multiplier * item.quantity, current_path)
 
     await expand(owner_num, 1, ())
-    return tuple(
+    rows = tuple(
         BomRow(
             entities[key][0],
             entities[key][1],
@@ -187,3 +197,4 @@ async def bill_of_materials(
         )
         for key, quantity in sorted(quantities.items())
     )
+    return CatalogBom(rows, tuple(skipped))

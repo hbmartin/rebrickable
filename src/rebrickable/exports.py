@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -118,7 +119,7 @@ def translation_table(report: TranslationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-def catalog_bom_to_csv(rows: tuple[BomRow, ...]) -> str:
+def catalog_bom_to_csv(rows: Iterable[BomRow]) -> str:
     """Serialize a flattened catalog BOM using stable RFC 4180 columns."""
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
