@@ -433,7 +433,11 @@ class RebrickableSession:
         max_depth: int = 4,
         max_candidates: int = 100,
     ) -> tuple[SubstitutionEvidence, ...]:
-        """Traverse the local relationship graph and retain why each candidate exists."""
+        """Traverse the local relationship graph and retain why each candidate exists.
+
+        Traversal stops ``max_depth`` hops from the root and the evidence list
+        is truncated at ``max_candidates`` entries.
+        """
         if direction not in {"both", "parents", "children"}:
             raise ValueError("direction must be both, parents, or children")
         if max_depth < 0:

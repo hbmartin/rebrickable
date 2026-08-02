@@ -38,6 +38,7 @@ jobs:
             git switch -c "$branch"
           fi
           git reset --hard "$GITHUB_SHA"
+          git clean -fd src/rebrickable/data
           git apply --index /tmp/openapi.patch
           git config user.name github-actions
           git config user.email github-actions@github.com

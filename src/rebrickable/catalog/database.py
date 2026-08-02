@@ -177,6 +177,13 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
 
 
 async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogState]:
+    """Open the active snapshot read-only under the promotion lock.
+
+    Pointer resolution, verification, and connecting all hold the promotion
+    lock so a concurrent refresh cannot prune the resolved snapshot; opens
+    therefore serialize and raise ``CatalogUnavailableError`` after
+    ``Config.lock_timeout`` seconds of contention.
+    """
     paths = CatalogPaths.from_config(config)
     lock: FileLock | None = None
     if paths.lock_file.parent.is_dir():

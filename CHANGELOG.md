@@ -33,6 +33,17 @@ Pre-release review fixes; several behaviors changed while the API is unreleased:
 - `rebrickable.api.generated_requests` was removed; the operation registry is
   the single request contract, enforced by a per-operation wire-contract test.
 - Dependencies are locked against pypi.org; pyldraw3 resolves from PyPI 1.5.0.
+- `Bom.from_rebrickable_xml` is renamed `Bom.from_bricklink_xml`; parsed items
+  now carry BrickLink part/color namespaces (the old name remains as an alias
+  with the new namespaces). String BOM sources are always inline content —
+  pass `Path` to read a file; a single-line string ending in `.csv`/`.xml`
+  raises with guidance instead of being parsed.
+- `session.substitutes` bounds traversal with `max_depth=4` and
+  `max_candidates=100` keyword defaults and truncates results accordingly.
+- Windows config/data/cache directories drop the vendor path segment
+  (`platformdirs` with `appauthor=False`); existing Windows installs start
+  fresh under the new locations.
+- Catalog search requires runtime SQLite 3.35+ (materialized CTE ranking).
 
 ## 1.0.0 — 2026-08-01
 

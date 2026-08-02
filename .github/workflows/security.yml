@@ -28,5 +28,6 @@ jobs:
       - name: Audit locked Python dependencies
         run: uv run pip-audit
       - name: Run repository guardrails
-        run: uvx --from semgrep==1.136.0 --with 'setuptools<81' semgrep --config .semgrep.yml --error
+        # semgrep 1.136.0 crashes on Python 3.14 (custom tp_new metaclasses).
+        run: uvx --python 3.12 --from semgrep==1.136.0 --with 'setuptools<81' semgrep --config .semgrep.yml --error
       - uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
