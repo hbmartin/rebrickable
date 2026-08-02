@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -38,6 +39,41 @@ def database_for(config: Config) -> Path:
     paths = CatalogPaths.from_config(config)
     pointer = json.loads(paths.active_pointer.read_text())
     return paths.database_for(pointer["snapshot_id"])
+
+
+@pytest.mark.asyncio
+async def test_override_resolves_snapshot_after_acquiring_promotion_lock(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    old_snapshot = paths.snapshots_dir / "fixture-snapshot"
+    promoted_id = "promoted-snapshot"
+    promoted_snapshot = paths.snapshots_dir / promoted_id
+    shutil.copytree(old_snapshot, promoted_snapshot)
+
+    class PromotingLock:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> PromotingLock:
+            paths.active_pointer.write_text(json.dumps({"snapshot_id": promoted_id}))
+            shutil.rmtree(old_snapshot)
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr("rebrickable.bridge.ldraw.FileLock", PromotingLock)
+
+    async with await RebrickableSession.open(catalog_config) as session:
+        await session.ldraw.record_part_override("race-safe.dat", "3001")
+
+    with closing(sqlite3.connect(paths.database_for(promoted_id))) as connection:
+        row = connection.execute(
+            "SELECT target_id FROM user_mapping_overrides WHERE source_id=?",
+            ("race-safe",),
+        ).fetchone()
+    assert row == ("3001",)
 
 
 @pytest.mark.asyncio

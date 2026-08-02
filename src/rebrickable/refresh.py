@@ -215,7 +215,7 @@ async def _refresh_attempt(
     callback: ProgressCallback | None,
 ) -> RefreshReport:
     paths = CatalogPaths.from_config(config)
-    prior_state = await catalog_state(config)
+    prior_state = await catalog_state(config, verify=True)
     prior_by_name = {item.dataset: item for item in prior_state.files}
     config.cache_path.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(_prune_abandoned_staging, config.cache_path)
@@ -342,7 +342,11 @@ async def _refresh_attempt(
         _emit(
             callback, ProgressEvent(ProgressStage.PROMOTE, message="promoting snapshot")
         )
-        lock = FileLock(paths.lock_file, timeout=config.lock_timeout)
+        lock = FileLock(
+            paths.lock_file,
+            timeout=config.lock_timeout,
+            thread_local=False,
+        )
         try:
             await asyncio.to_thread(lock.acquire)
         except Timeout as exc:
@@ -352,7 +356,7 @@ async def _refresh_attempt(
         try:
             previous_database = (
                 paths.database_for(prior_state.snapshot_id)
-                if prior_state.snapshot_id
+                if prior_state.status is CatalogStatus.READY and prior_state.snapshot_id
                 else None
             )
             await asyncio.to_thread(_carry_crosswalk, previous_database, database)

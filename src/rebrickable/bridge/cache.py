@@ -26,14 +26,6 @@ def store_crosswalks(
 ) -> None:
     """Write confirmed identifiers under the same lock used for promotion."""
     paths = CatalogPaths.from_config(config)
-    try:
-        pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
-        snapshot_id = str(pointer["snapshot_id"])
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise CatalogUnavailableError("catalog is not ready") from exc
-    database = paths.database_for(snapshot_id)
-    if not database.is_file():
-        raise CatalogUnavailableError("catalog is not ready")
     payload = json.dumps(
         response_payload,
         ensure_ascii=False,
@@ -45,6 +37,20 @@ def store_crosswalks(
     retrieved_at = datetime.now(UTC).isoformat()
     lock = FileLock(paths.lock_file, timeout=config.lock_timeout)
     with lock:
+        try:
+            pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+            snapshot_id = str(pointer["snapshot_id"])
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise CatalogUnavailableError("catalog is not ready") from exc
+        database = paths.database_for(snapshot_id)
+        if not database.is_file():
+            raise CatalogUnavailableError("catalog is not ready")
         connection = sqlite3.connect(database)
         try:
             affected = {canonical_id}

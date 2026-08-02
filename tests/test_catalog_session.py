@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
+from filelock import Timeout
 
 from rebrickable import (
     Bom,
@@ -17,7 +20,11 @@ from rebrickable import (
 from rebrickable.bom import BomItem
 from rebrickable.catalog.database import CatalogPaths, catalog_state, open_catalog
 from rebrickable.config import Config
-from rebrickable.errors import CatalogUnavailableError, EntityNotFoundError
+from rebrickable.errors import (
+    CatalogUnavailableError,
+    CatalogUnreadableError,
+    EntityNotFoundError,
+)
 
 from .conftest import build_catalog_config
 
@@ -32,6 +39,13 @@ async def test_missing_catalog_state_and_query(tmp_path: Path) -> None:
     async with await RebrickableSession.open(config) as session:
         with pytest.raises(CatalogUnavailableError):
             await session.parts.get("3001")
+
+    nested = Config(
+        database_path=tmp_path / "absent" / "catalog.sqlite",
+        cache_path=tmp_path / "cache",
+    )
+    with pytest.raises(CatalogUnavailableError):
+        await open_catalog(nested)
 
 
 @pytest.mark.asyncio
@@ -56,6 +70,9 @@ async def test_repository_search_inventory_and_bom(catalog_config: Config) -> No
         bom = await session.sets.bill_of_materials("100-1")
         quantities = {(row.part.part_num, row.color.id): row.quantity for row in bom}
         assert quantities == {("3001", 1): 2, ("3001", 4): 2, ("3002", 4): 1}
+        assert len(bom) == len(bom.rows)
+        assert bom[0] == bom.rows[0]
+        assert bom[:] == bom.rows
         assert bom.skipped == ()
         with_spares = await session.sets.bill_of_materials("100-1", include_spares=True)
         assert {(row.part.part_num, row.color.id): row.quantity for row in with_spares}[
@@ -102,6 +119,66 @@ async def test_open_catalog_handles_hostile_paths(tmp_path: Path) -> None:
     async with await RebrickableSession.open(config) as session:
         part = await session.parts.require("3001")
         assert part.name == "Brick 2 x 4"
+
+
+@pytest.mark.asyncio
+async def test_open_catalog_resolves_snapshot_while_holding_promotion_lock(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    old_snapshot = paths.snapshots_dir / "fixture-snapshot"
+    promoted_id = "promoted-snapshot"
+    promoted_snapshot = paths.snapshots_dir / promoted_id
+    shutil.copytree(old_snapshot, promoted_snapshot)
+    acquired: list[bool] = []
+
+    class PromotingLock:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def acquire(self) -> None:
+            acquired.append(True)
+            paths.active_pointer.write_text(json.dumps({"snapshot_id": promoted_id}))
+            shutil.rmtree(old_snapshot)
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr("rebrickable.catalog.database.FileLock", PromotingLock)
+
+    connection, state = await open_catalog(catalog_config)
+    try:
+        row = await (
+            await connection.execute("SELECT name FROM parts LIMIT 1")
+        ).fetchone()
+    finally:
+        await connection.close()
+
+    assert acquired == [True]
+    assert state.snapshot_id == promoted_id
+    assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_open_catalog_reports_lock_timeout(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_acquire(lock: object) -> None:
+        raise Timeout(str(getattr(lock, "lock_file", "catalog")))
+
+    monkeypatch.setattr("rebrickable.catalog.database.FileLock.acquire", fail_acquire)
+
+    with pytest.raises(CatalogUnavailableError, match="catalog is busy"):
+        await open_catalog(catalog_config)
+
+
+@pytest.mark.asyncio
+async def test_open_catalog_reports_corrupt_database(catalog_config: Config) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    paths.database_for("fixture-snapshot").write_bytes(b"not sqlite")
+
+    with pytest.raises(CatalogUnreadableError):
+        await open_catalog(catalog_config)
 
 
 @pytest.mark.asyncio

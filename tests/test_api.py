@@ -46,6 +46,19 @@ class FakeTransport:
         return self.responses.pop(0)
 
 
+class LegacyTransport:
+    """Transport implementation from before the optional JSON-body extension."""
+
+    def __init__(self, response: FakeResponse) -> None:
+        self.response = response
+        self.called = False
+
+    async def request(self, method, url, *, headers, params=None, data=None):
+        del method, url, headers, params, data
+        self.called = True
+        return self.response
+
+
 def client(transport: FakeTransport) -> RebrickableClient:
     return RebrickableClient(
         api_key="very-secret",
@@ -76,6 +89,30 @@ async def test_list_get_auth_and_extra_fields() -> None:
     assert transport.requests[0][2]["headers"]["Authorization"] == "key very-secret"
     assert "very-secret" not in transport.requests[0][1]
     assert "very-secret" not in repr(api)
+
+
+@pytest.mark.asyncio
+async def test_read_requests_support_legacy_custom_transports() -> None:
+    transport = LegacyTransport(
+        FakeResponse(
+            {
+                "count": 1,
+                "next": None,
+                "previous": None,
+                "results": [{"id": 4, "name": "Red"}],
+            }
+        )
+    )
+    api = RebrickableClient(
+        api_key="key",
+        config=Config(request_interval=0, max_retries=0),
+        transport=transport,
+    )
+
+    page = await api.list_colors()
+
+    assert page.results[0].name == "Red"
+    assert transport.called
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 import aiosqlite
+from filelock import FileLock, Timeout
 
 from rebrickable.catalog.schema import SCHEMA_VERSION
 from rebrickable.config import Config
@@ -175,23 +177,39 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
 
 
 async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogState]:
-    state = await catalog_state(config, verify=True)
-    if state.status is CatalogStatus.SCHEMA_MISMATCH:
-        raise CatalogSchemaError("catalog schema does not match this release")
-    if state.status is CatalogStatus.UNREADABLE:
-        raise CatalogUnreadableError("active catalog is unreadable")
-    if state.status is not CatalogStatus.READY:
-        raise CatalogUnavailableError(
-            "catalog is not ready; run `rebrickable refresh`",
+    paths = CatalogPaths.from_config(config)
+    lock: FileLock | None = None
+    if paths.lock_file.parent.is_dir():
+        lock = FileLock(
+            paths.lock_file,
+            timeout=config.lock_timeout,
+            thread_local=False,
         )
-    connection = await aiosqlite.connect(
-        _read_only_uri(state.database_path),
-        uri=True,
-    )
+        try:
+            await asyncio.to_thread(lock.acquire)
+        except Timeout as exc:
+            raise CatalogUnavailableError("catalog is busy; retry opening it") from exc
     try:
-        connection.row_factory = aiosqlite.Row
-        await connection.execute("PRAGMA query_only = ON")
-    except BaseException:
-        await connection.close()
-        raise
-    return connection, state
+        state = await catalog_state(config, verify=True)
+        if state.status is CatalogStatus.SCHEMA_MISMATCH:
+            raise CatalogSchemaError("catalog schema does not match this release")
+        if state.status is CatalogStatus.UNREADABLE:
+            raise CatalogUnreadableError("active catalog is unreadable")
+        if state.status is not CatalogStatus.READY:
+            raise CatalogUnavailableError(
+                "catalog is not ready; run `rebrickable refresh`",
+            )
+        connection = await aiosqlite.connect(
+            _read_only_uri(state.database_path),
+            uri=True,
+        )
+        try:
+            connection.row_factory = aiosqlite.Row
+            await connection.execute("PRAGMA query_only = ON")
+        except BaseException:
+            await connection.close()
+            raise
+        return connection, state
+    finally:
+        if lock is not None:
+            lock.release()

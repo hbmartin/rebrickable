@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from filelock import Timeout
+from filelock import FileLock, Timeout
 
 from rebrickable import CatalogStatus, Config, RebrickableSession, RefreshOutcome
 from rebrickable.catalog.database import CatalogPaths, catalog_state
@@ -73,6 +73,8 @@ async def test_complete_refresh_promotion_unchanged_and_progress(
     paths = CatalogPaths.from_config(config)
     assert paths.database_for(report.snapshot_id).is_file()
     assert (paths.snapshots_dir / report.snapshot_id / "parts.csv.gz").is_file()
+    with FileLock(paths.lock_file, timeout=0.1):
+        pass
     async with await RebrickableSession.open(config) as session:
         assert (await session.parts.require("3001")).name == "Brick 2 x 4"
 
@@ -163,6 +165,31 @@ async def test_schema_mismatch_refresh_reimports_despite_304s(
     assert report.outcome is RefreshOutcome.UPDATED
     assert report.snapshot_id != "fixture-snapshot"
     assert (await catalog_state(catalog_config)).status is CatalogStatus.READY
+    async with await RebrickableSession.open(catalog_config) as session:
+        assert (await session.parts.require("3001")).name == "Brick 2 x 4"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_database_refresh_reimports_despite_304s(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    sources = snapshot_sources(catalog_config)
+    paths.database_for("fixture-snapshot").write_bytes(b"not a sqlite database")
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.UNREADABLE
+
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
+    )
+    report = await refresh_catalog(catalog_config)
+
+    assert report.outcome is RefreshOutcome.UPDATED
+    assert report.snapshot_id != "fixture-snapshot"
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.READY
     async with await RebrickableSession.open(catalog_config) as session:
         assert (await session.parts.require("3001")).name == "Brick 2 x 4"
 

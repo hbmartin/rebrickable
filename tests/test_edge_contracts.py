@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -262,6 +264,9 @@ async def test_override_configuration_and_external_value_edges(tmp_path: Path) -
     async with await RebrickableSession.open(config) as session:
         await session.ldraw.record_part_override("x", "3001")
         await session.ldraw.remove_part_override("x")
+        paths = CatalogPaths.from_config(config)
+        paths.active_pointer.write_text(json.dumps({"snapshot_id": None}))
+        await session.ldraw.record_part_override("invalid-pointer", "3001")
 
     async with await RebrickableSession.open(
         Config(database_path=tmp_path / "other.sqlite", cache_path=tmp_path / "cache2")
@@ -336,6 +341,69 @@ def test_crosswalk_and_carry_failure_edges(
         )
     with pytest.raises(CatalogImportError):
         _carry_crosswalk(None, tmp_path / "not-a-database.sqlite")
+
+    paths = CatalogPaths.from_config(catalog_config)
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=(),
+        operation_id="lego_parts_read",
+        response_payload={},
+    )
+    paths.active_pointer.write_text(json.dumps({"snapshot_id": "missing-snapshot"}))
+    with pytest.raises(CatalogUnavailableError):
+        store_crosswalks(
+            catalog_config,
+            entity_kind="part",
+            external_system="ldraw",
+            canonical_id="3001",
+            external_ids=("x",),
+            operation_id="lego_parts_read",
+            response_payload={},
+        )
+
+
+def test_crosswalk_resolves_snapshot_after_acquiring_promotion_lock(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    old_snapshot = paths.snapshots_dir / "fixture-snapshot"
+    promoted_id = "promoted-snapshot"
+    promoted_snapshot = paths.snapshots_dir / promoted_id
+    shutil.copytree(old_snapshot, promoted_snapshot)
+
+    class PromotingLock:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> PromotingLock:
+            paths.active_pointer.write_text(json.dumps({"snapshot_id": promoted_id}))
+            shutil.rmtree(old_snapshot)
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr("rebrickable.bridge.cache.FileLock", PromotingLock)
+
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=("race-safe",),
+        operation_id="lego_parts_read",
+        response_payload={"part_num": "3001"},
+    )
+
+    with closing(sqlite3.connect(paths.database_for(promoted_id))) as connection:
+        row = connection.execute(
+            "SELECT canonical_id FROM api_crosswalk_cache WHERE external_id=?",
+            ("race-safe",),
+        ).fetchone()
+    assert row == ("3001",)
 
 
 def test_importer_parser_batches_and_failures(

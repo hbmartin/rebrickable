@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sqlite3
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from rebrickable.api.client import RebrickableClient
+    from rebrickable.config import Config
     from rebrickable.session import RebrickableSession
 
 _STATUS_SEVERITY = {
@@ -231,13 +233,10 @@ class LDrawBridge:
         override_path = self._session.config.mapping_overrides_path
         if override_path is None:
             raise ValueError("mapping_overrides_path is not configured")
-        state = await self._session.state()
         await asyncio.to_thread(
             _persist_override,
             path=override_path,
-            lock_path=CatalogPaths.from_config(self._session.config).lock_file,
-            lock_timeout=self._session.config.lock_timeout,
-            database=state.database_path if state.database_path.is_file() else None,
+            config=self._session.config,
             entity_kind=entity_kind,
             source_id=source_id,
             target_id=target_id,
@@ -268,13 +267,10 @@ class LDrawBridge:
         override_path = self._session.config.mapping_overrides_path
         if override_path is None:
             raise ValueError("mapping_overrides_path is not configured")
-        state = await self._session.state()
         await asyncio.to_thread(
             _delete_override,
             path=override_path,
-            lock_path=CatalogPaths.from_config(self._session.config).lock_file,
-            lock_timeout=self._session.config.lock_timeout,
-            database=state.database_path if state.database_path.is_file() else None,
+            config=self._session.config,
             entity_kind=entity_kind,
             source_id=source_id,
         )
@@ -319,9 +315,7 @@ def _external_values(external_ids: object, system: str) -> tuple[str, ...]:
 def _persist_override(
     *,
     path: Path,
-    lock_path: Path,
-    lock_timeout: float,
-    database: Path | None,
+    config: Config,
     entity_kind: str,
     source_id: str,
     target_id: str,
@@ -329,7 +323,9 @@ def _persist_override(
 ) -> None:
     from rebrickable.bridge.cache import update_search_document
 
-    with FileLock(lock_path, timeout=lock_timeout):
+    paths = CatalogPaths.from_config(config)
+    with FileLock(paths.lock_file, timeout=config.lock_timeout):
+        database = _active_database(paths)
         existing = read_overrides(path)
         records = [
             item
@@ -380,15 +376,15 @@ def _persist_override(
 def _delete_override(
     *,
     path: Path,
-    lock_path: Path,
-    lock_timeout: float,
-    database: Path | None,
+    config: Config,
     entity_kind: str,
     source_id: str,
 ) -> None:
     from rebrickable.bridge.cache import update_search_document
 
-    with FileLock(lock_path, timeout=lock_timeout):
+    paths = CatalogPaths.from_config(config)
+    with FileLock(paths.lock_file, timeout=config.lock_timeout):
+        database = _active_database(paths)
         existing = read_overrides(path)
         affected = {
             item["target_id"]
@@ -420,3 +416,15 @@ def _delete_override(
             finally:
                 connection.close()
         write_overrides(path, records)
+
+
+def _active_database(paths: CatalogPaths) -> Path | None:
+    try:
+        pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+        snapshot_id = pointer["snapshot_id"]
+    except (OSError, UnicodeError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        return None
+    database = paths.database_for(snapshot_id)
+    return database if database.is_file() else None
