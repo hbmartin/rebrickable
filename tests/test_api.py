@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from importlib.resources import files
@@ -119,6 +120,8 @@ def test_openapi_parity_and_public_methods() -> None:
         OPENAPI_SHA256
         == "91b49e310f8fb2db4ff7474e2775921897e10319a71ec053cac61f3a40fa7cb6"
     )
+    raw = files("rebrickable.data").joinpath(OPENAPI_RESOURCE).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == OPENAPI_SHA256
     expected = {
         "lego_colors_list": "list_colors",
         "lego_colors_read": "get_color",
