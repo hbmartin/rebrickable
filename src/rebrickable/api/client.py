@@ -1,0 +1,1217 @@
+"""Complete asynchronous Rebrickable API v3 client."""
+
+from __future__ import annotations
+
+import asyncio
+import random
+import re
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any, TypeVar, cast
+from urllib.parse import quote
+
+import httpx2
+from pydantic import BaseModel
+
+from rebrickable.api.decoding import decode_model
+from rebrickable.api.models import (
+    ApiAlternateBuild,
+    ApiBadge,
+    ApiBuildResult,
+    ApiColor,
+    ApiElement,
+    ApiInventoryMinifig,
+    ApiInventoryPart,
+    ApiInventorySet,
+    ApiLostPart,
+    ApiMinifig,
+    ApiPage,
+    ApiPart,
+    ApiPartCategory,
+    ApiPartColor,
+    ApiPartList,
+    ApiPartListPart,
+    ApiProfile,
+    ApiRecord,
+    ApiSet,
+    ApiSetList,
+    ApiSetListSet,
+    ApiTheme,
+    ApiUserMinifig,
+    ApiUserPart,
+    ApiUserSet,
+    ApiUserToken,
+    CreateUserTokenRequest,
+    LostPartRequest,
+    MutationResult,
+    PartListPartRequest,
+    PartListRequest,
+    PartListUpdateRequest,
+    QuantityRequest,
+    SetListRequest,
+    SetListUpdateRequest,
+    SetQuantityRequest,
+    UserSetsSyncRequest,
+)
+from rebrickable.api.operation_registry import OPERATIONS
+from rebrickable.api.pagination import validate_next_url
+from rebrickable.api.transport import AsyncTransport, HttpxTransport, ResponseLike
+from rebrickable.config import Config
+from rebrickable.errors import (
+    ApiAuthenticationError,
+    ApiError,
+    ApiForbiddenError,
+    ApiNotFoundError,
+    ApiServerError,
+    ApiThrottledError,
+    PaginationCycleError,
+    UserTokenRequiredError,
+)
+
+T = TypeVar("T", bound=BaseModel)
+QueryValue = str | int | float | bool | None
+MutationRetryPolicy = Callable[[str], bool]
+
+_TRANSIENT = {500, 502, 503, 504}
+_THROTTLE_SECONDS = re.compile(
+    r"(?:in|after)\s+(\d+(?:\.\d+)?)\s+seconds?", re.IGNORECASE
+)
+
+
+class RebrickableClient:
+    """Typed API v3 client with header-only authentication and safe pacing."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        user_token: str | None = None,
+        config: Config | None = None,
+        transport: AsyncTransport | None = None,
+        mutation_retry_policy: MutationRetryPolicy | None = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("api_key must not be empty")
+        self._api_key = api_key
+        self._user_token = user_token
+        self._config = Config() if config is None else config
+        timeout = httpx2.Timeout(
+            connect=self._config.connect_timeout,
+            read=self._config.read_timeout,
+            write=self._config.write_timeout,
+            pool=self._config.pool_timeout,
+        )
+        self._transport: AsyncTransport = transport or HttpxTransport(timeout=timeout)
+        self._owns_transport = transport is None
+        self._mutation_retry_policy = mutation_retry_policy
+        self._pace_lock = asyncio.Lock()
+        self._next_request_at = 0.0
+        self._throttle_until = 0.0
+        self._closed = False
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(api_key=<redacted>, user_token={'<set>' if self._user_token else None})"
+
+    async def __aenter__(self) -> RebrickableClient:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._owns_transport and isinstance(self._transport, HttpxTransport):
+            await self._transport.close()
+
+    def _token(self, token: str | None) -> str:
+        resolved = token or self._user_token
+        if not resolved:
+            raise UserTokenRequiredError("user_token is required for this operation")
+        return resolved
+
+    async def _pace(self) -> None:
+        loop = asyncio.get_running_loop()
+        async with self._pace_lock:
+            now = loop.time()
+            ready = max(self._next_request_at, self._throttle_until)
+            if ready > now:
+                await asyncio.sleep(ready - now)
+            self._next_request_at = loop.time() + self._config.request_interval
+
+    @staticmethod
+    def _detail(response: ResponseLike) -> str:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return response.text[:400] or "upstream request failed"
+        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+            return payload["detail"][:400]
+        return "upstream request failed"
+
+    @staticmethod
+    def _retry_after(response: ResponseLike, detail: str) -> float | None:
+        header = response.headers.get("retry-after")
+        if header:
+            try:
+                return max(0.0, float(header))
+            except ValueError:
+                try:
+                    parsed = parsedate_to_datetime(header)
+                    return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
+                except (TypeError, ValueError):
+                    pass
+        match = _THROTTLE_SECONDS.search(detail)
+        return float(match.group(1)) if match else None
+
+    def _error(
+        self,
+        response: ResponseLike,
+        *,
+        operation_id: str,
+        path_template: str,
+        retry_after: float | None = None,
+    ) -> ApiError:
+        detail = self._detail(response)
+        for secret in (self._api_key, self._user_token):
+            if secret:
+                detail = detail.replace(secret, "<redacted>")
+        request_id = response.headers.get("x-request-id")
+        values = (
+            response.status_code,
+            path_template,
+            operation_id,
+            detail,
+            request_id,
+            retry_after,
+        )
+        if response.status_code == 401:
+            return ApiAuthenticationError(*values)
+        if response.status_code == 403:
+            return ApiForbiddenError(*values)
+        if response.status_code == 404:
+            return ApiNotFoundError(*values)
+        if response.status_code == 429:
+            return ApiThrottledError(*values)
+        if response.status_code >= 500:
+            return ApiServerError(*values)
+        return ApiError(*values)
+
+    async def _send(
+        self,
+        operation_id: str,
+        *,
+        path_values: Mapping[str, str | int] | None = None,
+        query: Mapping[str, QueryValue] | None = None,
+        form: Mapping[str, Any] | None = None,
+        absolute_url: str | None = None,
+        retry_mutation: bool = False,
+    ) -> ResponseLike:
+        if self._closed:
+            raise RuntimeError("client is closed")
+        operation = OPERATIONS[operation_id]
+        path_values = dict(path_values or {})
+        path = operation.path
+        for name in operation.path_parameters:
+            if name not in path_values:
+                raise TypeError(f"missing path parameter: {name}")
+            path = path.replace(
+                "{" + name + "}", quote(str(path_values[name]), safe="")
+            )
+        query_data = {
+            key: value for key, value in (query or {}).items() if value is not None
+        }
+        form_data = {
+            key: value for key, value in (form or {}).items() if value is not None
+        }
+        unknown_query = set(query_data) - set(operation.query_parameters)
+        unknown_form = set(form_data) - set(operation.form_parameters)
+        if unknown_query or unknown_form:
+            unknown = sorted(unknown_query | unknown_form)
+            raise TypeError("unsupported parameters: " + ", ".join(unknown))
+        url = absolute_url or f"{self._config.base_url.rstrip('/')}{path}"
+        idempotent = operation.method in {"GET", "DELETE"}
+        retry_mutation = retry_mutation or bool(
+            self._mutation_retry_policy and self._mutation_retry_policy(operation_id)
+        )
+        max_attempts = (
+            self._config.max_retries + 1 if idempotent or retry_mutation else 1
+        )
+        for attempt in range(max_attempts):
+            await self._pace()
+            try:
+                response = await self._transport.request(
+                    operation.method,
+                    url,
+                    headers={
+                        "Authorization": f"key {self._api_key}",
+                        "Accept": "application/json",
+                    },
+                    params=query_data or None,
+                    data=form_data or None,
+                )
+            except (httpx2.TransportError, OSError) as exc:
+                if attempt + 1 >= max_attempts:
+                    raise ApiError(
+                        None, operation.path, operation_id, "transport failure"
+                    ) from exc
+                await asyncio.sleep(min(8.0, 2**attempt + random.random()))
+                continue
+            if response.status_code == 429:
+                detail = self._detail(response)
+                delay = self._retry_after(response, detail) or min(
+                    30.0, 2**attempt + random.random()
+                )
+                self._throttle_until = max(
+                    asyncio.get_running_loop().time() + delay, self._throttle_until
+                )
+                if attempt + 1 < max_attempts:
+                    continue
+                raise self._error(
+                    response,
+                    operation_id=operation_id,
+                    path_template=operation.path,
+                    retry_after=delay,
+                )
+            if response.status_code in _TRANSIENT and attempt + 1 < max_attempts:
+                await asyncio.sleep(min(8.0, 2**attempt + random.random()))
+                continue
+            if response.status_code >= 400:
+                raise self._error(
+                    response, operation_id=operation_id, path_template=operation.path
+                )
+            return response
+        raise AssertionError("request loop exhausted")  # pragma: no cover
+
+    async def _model(
+        self,
+        operation_id: str,
+        model: type[T],
+        *,
+        path: Mapping[str, str | int] | None = None,
+        query: Mapping[str, QueryValue] | None = None,
+        form: Mapping[str, Any] | None = None,
+        retry_mutation: bool = False,
+    ) -> T:
+        response = await self._send(
+            operation_id,
+            path_values=path,
+            query=query,
+            form=form,
+            retry_mutation=retry_mutation,
+        )
+        payload = (
+            {} if response.status_code == 204 or not response.text else response.json()
+        )
+        operation = OPERATIONS[operation_id]
+        return decode_model(
+            model, payload, operation_id=operation_id, path_template=operation.path
+        )
+
+    async def _page(
+        self,
+        operation_id: str,
+        item: type[T],
+        *,
+        path: Mapping[str, str | int] | None = None,
+        query: Mapping[str, QueryValue] | None = None,
+        absolute_url: str | None = None,
+    ) -> ApiPage[T]:
+        response = await self._send(
+            operation_id, path_values=path, query=query, absolute_url=absolute_url
+        )
+        operation = OPERATIONS[operation_id]
+        page_model = ApiPage[item]  # ty: ignore[invalid-type-form]
+        return cast(
+            "ApiPage[T]",
+            decode_model(
+                page_model,
+                response.json(),
+                operation_id=operation_id,
+                path_template=operation.path,
+            ),
+        )
+
+    async def _iter(
+        self,
+        operation_id: str,
+        item: type[T],
+        *,
+        path: Mapping[str, str | int] | None = None,
+        query: Mapping[str, QueryValue] | None = None,
+    ) -> AsyncIterator[T]:
+        options = dict(query or {})
+        options.setdefault("page_size", 1_000)
+        page = await self._page(operation_id, item, path=path, query=options)
+        visited: set[str] = set()
+        while True:
+            yield_values = page.results
+            for result in yield_values:
+                yield result
+            if page.next is None:
+                return
+            next_url = validate_next_url(str(page.next), self._config.base_url)
+            if next_url in visited:
+                raise PaginationCycleError(next_url)
+            visited.add(next_url)
+            page = await self._page(
+                operation_id, item, path=path, absolute_url=next_url
+            )
+
+    # Catalog and specification -------------------------------------------------
+    async def list_colors(self, **query: QueryValue) -> ApiPage[ApiColor]:
+        return await self._page("lego_colors_list", ApiColor, query=query)
+
+    def iter_colors(self, **query: QueryValue) -> AsyncIterator[ApiColor]:
+        return self._iter("lego_colors_list", ApiColor, query=query)
+
+    async def get_color(self, color_id: int, **query: QueryValue) -> ApiColor:
+        return await self._model(
+            "lego_colors_read", ApiColor, path={"id": color_id}, query=query
+        )
+
+    async def get_element(self, element_id: str) -> ApiElement:
+        return await self._model(
+            "lego_elements_read", ApiElement, path={"element_id": element_id}
+        )
+
+    async def list_minifigs(self, **query: QueryValue) -> ApiPage[ApiMinifig]:
+        return await self._page("lego_minifigs_list", ApiMinifig, query=query)
+
+    def iter_minifigs(self, **query: QueryValue) -> AsyncIterator[ApiMinifig]:
+        return self._iter("lego_minifigs_list", ApiMinifig, query=query)
+
+    async def get_minifig(self, fig_num: str) -> ApiMinifig:
+        return await self._model(
+            "lego_minifigs_read", ApiMinifig, path={"set_num": fig_num}
+        )
+
+    async def list_minifig_parts(
+        self, fig_num: str, **query: QueryValue
+    ) -> ApiPage[ApiInventoryPart]:
+        return await self._page(
+            "lego_minifigs_parts_list",
+            ApiInventoryPart,
+            path={"set_num": fig_num},
+            query=query,
+        )
+
+    def iter_minifig_parts(
+        self, fig_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiInventoryPart]:
+        return self._iter(
+            "lego_minifigs_parts_list",
+            ApiInventoryPart,
+            path={"set_num": fig_num},
+            query=query,
+        )
+
+    async def list_minifig_sets(
+        self, fig_num: str, **query: QueryValue
+    ) -> ApiPage[ApiSet]:
+        return await self._page(
+            "lego_minifigs_sets_list", ApiSet, path={"set_num": fig_num}, query=query
+        )
+
+    def iter_minifig_sets(
+        self, fig_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiSet]:
+        return self._iter(
+            "lego_minifigs_sets_list", ApiSet, path={"set_num": fig_num}, query=query
+        )
+
+    async def list_part_categories(
+        self, **query: QueryValue
+    ) -> ApiPage[ApiPartCategory]:
+        return await self._page(
+            "lego_part_categories_list", ApiPartCategory, query=query
+        )
+
+    def iter_part_categories(
+        self, **query: QueryValue
+    ) -> AsyncIterator[ApiPartCategory]:
+        return self._iter("lego_part_categories_list", ApiPartCategory, query=query)
+
+    async def get_part_category(
+        self, category_id: int, **query: QueryValue
+    ) -> ApiPartCategory:
+        return await self._model(
+            "lego_part_categories_read",
+            ApiPartCategory,
+            path={"id": category_id},
+            query=query,
+        )
+
+    async def list_parts(self, **query: QueryValue) -> ApiPage[ApiPart]:
+        return await self._page("lego_parts_list", ApiPart, query=query)
+
+    def iter_parts(self, **query: QueryValue) -> AsyncIterator[ApiPart]:
+        return self._iter("lego_parts_list", ApiPart, query=query)
+
+    async def get_part(self, part_num: str, **query: QueryValue) -> ApiPart:
+        return await self._model(
+            "lego_parts_read", ApiPart, path={"part_num": part_num}, query=query
+        )
+
+    async def list_part_colors(
+        self, part_num: str, **query: QueryValue
+    ) -> ApiPage[ApiPartColor]:
+        return await self._page(
+            "lego_parts_colors_list",
+            ApiPartColor,
+            path={"part_num": part_num},
+            query=query,
+        )
+
+    def iter_part_colors(
+        self, part_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiPartColor]:
+        return self._iter(
+            "lego_parts_colors_list",
+            ApiPartColor,
+            path={"part_num": part_num},
+            query=query,
+        )
+
+    async def get_part_color(self, part_num: str, color_id: int) -> ApiPartColor:
+        return await self._model(
+            "lego_parts_colors_read",
+            ApiPartColor,
+            path={"part_num": part_num, "color_id": color_id},
+        )
+
+    async def list_part_color_sets(
+        self, part_num: str, color_id: int, **query: QueryValue
+    ) -> ApiPage[ApiSet]:
+        return await self._page(
+            "lego_parts_colors_sets_list",
+            ApiSet,
+            path={"part_num": part_num, "color_id": color_id},
+            query=query,
+        )
+
+    def iter_part_color_sets(
+        self, part_num: str, color_id: int, **query: QueryValue
+    ) -> AsyncIterator[ApiSet]:
+        return self._iter(
+            "lego_parts_colors_sets_list",
+            ApiSet,
+            path={"part_num": part_num, "color_id": color_id},
+            query=query,
+        )
+
+    async def list_sets(self, **query: QueryValue) -> ApiPage[ApiSet]:
+        return await self._page("lego_sets_list", ApiSet, query=query)
+
+    def iter_sets(self, **query: QueryValue) -> AsyncIterator[ApiSet]:
+        return self._iter("lego_sets_list", ApiSet, query=query)
+
+    async def get_set(self, set_num: str) -> ApiSet:
+        return await self._model("lego_sets_read", ApiSet, path={"set_num": set_num})
+
+    async def list_set_alternates(
+        self, set_num: str, **query: QueryValue
+    ) -> ApiPage[ApiAlternateBuild]:
+        return await self._page(
+            "lego_sets_alternates_list",
+            ApiAlternateBuild,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    def iter_set_alternates(
+        self, set_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiAlternateBuild]:
+        return self._iter(
+            "lego_sets_alternates_list",
+            ApiAlternateBuild,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    async def list_set_minifigs(
+        self, set_num: str, **query: QueryValue
+    ) -> ApiPage[ApiInventoryMinifig]:
+        return await self._page(
+            "lego_sets_minifigs_list",
+            ApiInventoryMinifig,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    def iter_set_minifigs(
+        self, set_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiInventoryMinifig]:
+        return self._iter(
+            "lego_sets_minifigs_list",
+            ApiInventoryMinifig,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    async def list_set_parts(
+        self, set_num: str, **query: QueryValue
+    ) -> ApiPage[ApiInventoryPart]:
+        return await self._page(
+            "lego_sets_parts_list",
+            ApiInventoryPart,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    def iter_set_parts(
+        self, set_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiInventoryPart]:
+        return self._iter(
+            "lego_sets_parts_list",
+            ApiInventoryPart,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    async def list_set_sets(
+        self, set_num: str, **query: QueryValue
+    ) -> ApiPage[ApiInventorySet]:
+        return await self._page(
+            "lego_sets_sets_list",
+            ApiInventorySet,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    def iter_set_sets(
+        self, set_num: str, **query: QueryValue
+    ) -> AsyncIterator[ApiInventorySet]:
+        return self._iter(
+            "lego_sets_sets_list",
+            ApiInventorySet,
+            path={"set_num": set_num},
+            query=query,
+        )
+
+    async def list_themes(self, **query: QueryValue) -> ApiPage[ApiTheme]:
+        return await self._page("lego_themes_list", ApiTheme, query=query)
+
+    def iter_themes(self, **query: QueryValue) -> AsyncIterator[ApiTheme]:
+        return self._iter("lego_themes_list", ApiTheme, query=query)
+
+    async def get_theme(self, theme_id: int, **query: QueryValue) -> ApiTheme:
+        return await self._model(
+            "lego_themes_read", ApiTheme, path={"id": theme_id}, query=query
+        )
+
+    async def get_openapi_spec(self) -> ApiRecord:
+        return await self._model("swagger_list", ApiRecord)
+
+    # Authentication and user data ---------------------------------------------
+    async def create_user_token(self, payload: CreateUserTokenRequest) -> ApiUserToken:
+        return await self._model(
+            "users__token_create", ApiUserToken, form=payload.form()
+        )
+
+    async def list_badges(self, **query: QueryValue) -> ApiPage[ApiBadge]:
+        return await self._page("users_badges_list", ApiBadge, query=query)
+
+    def iter_badges(self, **query: QueryValue) -> AsyncIterator[ApiBadge]:
+        return self._iter("users_badges_list", ApiBadge, query=query)
+
+    async def get_badge(self, badge_id: int, **query: QueryValue) -> ApiBadge:
+        return await self._model(
+            "users_badges_read", ApiBadge, path={"id": badge_id}, query=query
+        )
+
+    async def list_user_all_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiUserPart]:
+        return await self._page(
+            "users_allparts_list",
+            ApiUserPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_all_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiUserPart]:
+        return self._iter(
+            "users_allparts_list",
+            ApiUserPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def get_user_build_requirements(
+        self, set_num: str, *, user_token: str | None = None
+    ) -> ApiBuildResult:
+        return await self._model(
+            "users_build_read",
+            ApiBuildResult,
+            path={"user_token": self._token(user_token), "set_num": set_num},
+        )
+
+    async def list_user_lost_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiLostPart]:
+        return await self._page(
+            "users_lost_parts_list",
+            ApiLostPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_lost_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiLostPart]:
+        return self._iter(
+            "users_lost_parts_list",
+            ApiLostPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def add_user_lost_parts(
+        self, payload: LostPartRequest, *, user_token: str | None = None
+    ) -> ApiLostPart:
+        return await self._model(
+            "users_lost_parts_create",
+            ApiLostPart,
+            path={"user_token": self._token(user_token)},
+            form=payload.form(),
+        )
+
+    async def delete_user_lost_part(
+        self, lost_part_id: int, *, user_token: str | None = None
+    ) -> ApiRecord:
+        return await self._model(
+            "users_lost_parts_delete",
+            ApiRecord,
+            path={"user_token": self._token(user_token), "id": lost_part_id},
+        )
+
+    async def list_user_minifigs(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiUserMinifig]:
+        return await self._page(
+            "users_minifigs_list",
+            ApiUserMinifig,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_minifigs(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiUserMinifig]:
+        return self._iter(
+            "users_minifigs_list",
+            ApiUserMinifig,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def list_user_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiUserPart]:
+        return await self._page(
+            "users_parts_list",
+            ApiUserPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_parts(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiUserPart]:
+        return self._iter(
+            "users_parts_list",
+            ApiUserPart,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def get_user_profile(self, *, user_token: str | None = None) -> ApiProfile:
+        return await self._model(
+            "users_profile_read",
+            ApiProfile,
+            path={"user_token": self._token(user_token)},
+        )
+
+    # Part lists ----------------------------------------------------------------
+    async def list_user_part_lists(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiPartList]:
+        return await self._page(
+            "users_partlists_list",
+            ApiPartList,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_part_lists(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiPartList]:
+        return self._iter(
+            "users_partlists_list",
+            ApiPartList,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def create_user_part_list(
+        self, payload: PartListRequest, *, user_token: str | None = None
+    ) -> ApiPartList:
+        return await self._model(
+            "users_partlists_create",
+            ApiPartList,
+            path={"user_token": self._token(user_token)},
+            form=payload.form(),
+        )
+
+    async def get_user_part_list(
+        self, list_id: int, *, user_token: str | None = None
+    ) -> ApiPartList:
+        return await self._model(
+            "users_partlists_read",
+            ApiPartList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+        )
+
+    async def replace_user_part_list(
+        self, list_id: int, payload: PartListRequest, *, user_token: str | None = None
+    ) -> ApiPartList:
+        return await self._model(
+            "users_partlists_update",
+            ApiPartList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            form=payload.form(),
+        )
+
+    async def update_user_part_list(
+        self,
+        list_id: int,
+        payload: PartListUpdateRequest,
+        *,
+        user_token: str | None = None,
+    ) -> ApiPartList:
+        return await self._model(
+            "users_partlists_partial_update",
+            ApiPartList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            form=payload.form(),
+        )
+
+    async def delete_user_part_list(
+        self, list_id: int, *, user_token: str | None = None
+    ) -> ApiRecord:
+        return await self._model(
+            "users_partlists_delete",
+            ApiRecord,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+        )
+
+    async def list_user_part_list_parts(
+        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiPartListPart]:
+        return await self._page(
+            "users_partlists_parts_list",
+            ApiPartListPart,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            query=query,
+        )
+
+    def iter_user_part_list_parts(
+        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiPartListPart]:
+        return self._iter(
+            "users_partlists_parts_list",
+            ApiPartListPart,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            query=query,
+        )
+
+    async def add_user_part_list_parts(
+        self,
+        list_id: int,
+        payload: PartListPartRequest | Sequence[PartListPartRequest],
+        *,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        items = (
+            (payload,) if isinstance(payload, PartListPartRequest) else tuple(payload)
+        )
+        accepted: list[ApiRecord] = []
+        for item in items:
+            accepted.append(
+                await self._model(
+                    "users_partlists_parts_create",
+                    ApiRecord,
+                    path={"user_token": self._token(user_token), "list_id": list_id},
+                    form=item.form(),
+                )
+            )
+        return MutationResult(accepted=tuple(accepted))
+
+    async def get_user_part_list_part(
+        self,
+        list_id: int,
+        part_num: str,
+        color_id: int,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiPartListPart:
+        return await self._model(
+            "users_partlists_parts_read",
+            ApiPartListPart,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "part_num": part_num,
+                "color_id": color_id,
+            },
+            query=query,
+        )
+
+    async def replace_user_part_list_part(
+        self,
+        list_id: int,
+        part_num: str,
+        color_id: int,
+        payload: QuantityRequest,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiPartListPart:
+        return await self._model(
+            "users_partlists_parts_update",
+            ApiPartListPart,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "part_num": part_num,
+                "color_id": color_id,
+            },
+            query=query,
+            form=payload.form(),
+        )
+
+    async def delete_user_part_list_part(
+        self,
+        list_id: int,
+        part_num: str,
+        color_id: int,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiRecord:
+        return await self._model(
+            "users_partlists_parts_delete",
+            ApiRecord,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "part_num": part_num,
+                "color_id": color_id,
+            },
+            query=query,
+        )
+
+    # Set lists and collection sets --------------------------------------------
+    async def list_user_set_lists(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiSetList]:
+        return await self._page(
+            "users_setlists_list",
+            ApiSetList,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_set_lists(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiSetList]:
+        return self._iter(
+            "users_setlists_list",
+            ApiSetList,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def create_user_set_list(
+        self, payload: SetListRequest, *, user_token: str | None = None
+    ) -> ApiSetList:
+        return await self._model(
+            "users_setlists_create",
+            ApiSetList,
+            path={"user_token": self._token(user_token)},
+            form=payload.form(),
+        )
+
+    async def get_user_set_list(
+        self, list_id: int, *, user_token: str | None = None
+    ) -> ApiSetList:
+        return await self._model(
+            "users_setlists_read",
+            ApiSetList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+        )
+
+    async def replace_user_set_list(
+        self, list_id: int, payload: SetListRequest, *, user_token: str | None = None
+    ) -> ApiSetList:
+        return await self._model(
+            "users_setlists_update",
+            ApiSetList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            form=payload.form(),
+        )
+
+    async def update_user_set_list(
+        self,
+        list_id: int,
+        payload: SetListUpdateRequest,
+        *,
+        user_token: str | None = None,
+    ) -> ApiSetList:
+        return await self._model(
+            "users_setlists_partial_update",
+            ApiSetList,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            form=payload.form(),
+        )
+
+    async def delete_user_set_list(
+        self, list_id: int, *, user_token: str | None = None
+    ) -> ApiRecord:
+        return await self._model(
+            "users_setlists_delete",
+            ApiRecord,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+        )
+
+    async def list_user_set_list_sets(
+        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiSetListSet]:
+        return await self._page(
+            "users_setlists_sets_list",
+            ApiSetListSet,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            query=query,
+        )
+
+    def iter_user_set_list_sets(
+        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiSetListSet]:
+        return self._iter(
+            "users_setlists_sets_list",
+            ApiSetListSet,
+            path={"user_token": self._token(user_token), "list_id": list_id},
+            query=query,
+        )
+
+    async def add_user_set_list_sets(
+        self,
+        list_id: int,
+        payload: SetQuantityRequest | Sequence[SetQuantityRequest],
+        *,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        items = (
+            (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
+        )
+        accepted: list[ApiRecord] = []
+        for item in items:
+            accepted.append(
+                await self._model(
+                    "users_setlists_sets_create",
+                    ApiRecord,
+                    path={"user_token": self._token(user_token), "list_id": list_id},
+                    form=item.form(),
+                )
+            )
+        return MutationResult(accepted=tuple(accepted))
+
+    async def get_user_set_list_set(
+        self,
+        list_id: int,
+        set_num: str,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiSetListSet:
+        return await self._model(
+            "users_setlists_sets_read",
+            ApiSetListSet,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "set_num": set_num,
+            },
+            query=query,
+        )
+
+    async def replace_user_set_list_set(
+        self,
+        list_id: int,
+        set_num: str,
+        payload: SetQuantityRequest,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiSetListSet:
+        return await self._model(
+            "users_setlists_sets_update",
+            ApiSetListSet,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "set_num": set_num,
+            },
+            query=query,
+            form=payload.form(),
+        )
+
+    async def update_user_set_list_set(
+        self,
+        list_id: int,
+        set_num: str,
+        payload: SetQuantityRequest,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiSetListSet:
+        return await self._model(
+            "users_setlists_sets_partial_update",
+            ApiSetListSet,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "set_num": set_num,
+            },
+            query=query,
+            form=payload.form(),
+        )
+
+    async def delete_user_set_list_set(
+        self,
+        list_id: int,
+        set_num: str,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiRecord:
+        return await self._model(
+            "users_setlists_sets_delete",
+            ApiRecord,
+            path={
+                "user_token": self._token(user_token),
+                "list_id": list_id,
+                "set_num": set_num,
+            },
+            query=query,
+        )
+
+    async def list_user_sets(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiPage[ApiUserSet]:
+        return await self._page(
+            "users_sets_list",
+            ApiUserSet,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    def iter_user_sets(
+        self, *, user_token: str | None = None, **query: QueryValue
+    ) -> AsyncIterator[ApiUserSet]:
+        return self._iter(
+            "users_sets_list",
+            ApiUserSet,
+            path={"user_token": self._token(user_token)},
+            query=query,
+        )
+
+    async def add_user_sets(
+        self,
+        payload: SetQuantityRequest | Sequence[SetQuantityRequest],
+        *,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        items = (
+            (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
+        )
+        accepted: list[ApiRecord] = []
+        for item in items:
+            accepted.append(
+                await self._model(
+                    "users_sets_create",
+                    ApiRecord,
+                    path={"user_token": self._token(user_token)},
+                    form=item.form(),
+                )
+            )
+        return MutationResult(accepted=tuple(accepted))
+
+    async def sync_user_sets(
+        self,
+        payload: UserSetsSyncRequest,
+        *,
+        confirm_replace: bool = False,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        if not confirm_replace:
+            raise ValueError("sync_user_sets requires confirm_replace=True")
+        form = {
+            "set_num": ",".join(item.set_num or "" for item in payload.sets),
+            "quantity": ",".join(str(item.quantity) for item in payload.sets),
+            "include_spares": ",".join(
+                str(item.include_spares).lower() for item in payload.sets
+            ),
+        }
+        return await self._model(
+            "users_sets_sync_create",
+            MutationResult,
+            path={"user_token": self._token(user_token)},
+            form=form,
+        )
+
+    async def get_user_set(
+        self, set_num: str, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiUserSet:
+        return await self._model(
+            "users_sets_read",
+            ApiUserSet,
+            path={"user_token": self._token(user_token), "set_num": set_num},
+            query=query,
+        )
+
+    async def set_user_set_quantity(
+        self,
+        set_num: str,
+        payload: SetQuantityRequest,
+        *,
+        user_token: str | None = None,
+        **query: QueryValue,
+    ) -> ApiUserSet:
+        return await self._model(
+            "users_sets_update",
+            ApiUserSet,
+            path={"user_token": self._token(user_token), "set_num": set_num},
+            query=query,
+            form=payload.form(),
+        )
+
+    async def delete_user_set(
+        self, set_num: str, *, user_token: str | None = None, **query: QueryValue
+    ) -> ApiRecord:
+        return await self._model(
+            "users_sets_delete",
+            ApiRecord,
+            path={"user_token": self._token(user_token), "set_num": set_num},
+            query=query,
+        )
+
+    @property
+    def operation_ids(self) -> tuple[str, ...]:
+        return tuple(OPERATIONS)

@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = rebrickable
+omit = src/rebrickable/api/generated_requests.py
+
+[report]
+show_missing = True
+fail_under = 97

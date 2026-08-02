@@ -1,0 +1,135 @@
+"""Deterministic, safely escaped unified local search."""
+
+from __future__ import annotations
+
+import re
+
+import aiosqlite
+
+from rebrickable.types import SearchFilters, SearchHit, SearchKind, SearchResult
+
+
+def _fts_query(query: str) -> str:
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
+async def search(
+    connection: aiosqlite.Connection,
+    snapshot_id: str,
+    query: str,
+    *,
+    kinds: set[SearchKind] | None = None,
+    filters: SearchFilters | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> SearchResult:
+    if not 1 <= limit <= 1_000:
+        raise ValueError("limit must be between 1 and 1000")
+    if offset < 0:
+        raise ValueError("offset must not be negative")
+    normalized = " ".join(query.casefold().split())
+    active_filters = filters or SearchFilters()
+    if not normalized and kinds is None and active_filters == SearchFilters():
+        raise ValueError("empty search requires a kind or filter")
+    conditions: list[str] = []
+    values: list[object] = []
+    if kinds:
+        placeholders = ",".join("?" for _ in kinds)
+        conditions.append(f"kind IN ({placeholders})")
+        values.extend(item.value for item in sorted(kinds, key=lambda item: item.value))
+    filter_map = {
+        "year >= ?": active_filters.year_from,
+        "year <= ?": active_filters.year_to,
+        "theme_id = ?": active_filters.theme_id,
+        "num_parts >= ?": active_filters.min_parts,
+        "num_parts <= ?": active_filters.max_parts,
+        "category_id = ?": active_filters.category_id,
+        "material = ?": active_filters.material,
+    }
+    for clause, value in filter_map.items():
+        if value is not None:
+            conditions.append(clause)
+            values.append(value)
+    fts = _fts_query(normalized)
+    if normalized:
+        conditions.append(
+            "(lower(canonical_id)=? OR instr(' '||lower(external_ids)||' ',' '||?||' ')>0 "
+            "OR lower(canonical_id) LIKE ? ESCAPE '\\' OR normalized_name=? "
+            "OR normalized_name LIKE ? ESCAPE '\\' "
+            "OR rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?) "
+            "OR normalized_name LIKE ? ESCAPE '\\')",
+        )
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        values.extend(
+            (
+                normalized,
+                normalized,
+                f"{escaped}%",
+                normalized,
+                f"{escaped}%",
+                fts or '""',
+                f"%{escaped}%",
+            ),
+        )
+    where = " AND ".join(conditions) if conditions else "1"
+    count_row = await (
+        await connection.execute(
+            f"SELECT COUNT(*) FROM search_documents WHERE {where}", values
+        )
+    ).fetchone()
+    total = int(count_row[0]) if count_row else 0
+    if normalized:
+        rank_sql = """
+        CASE
+          WHEN lower(canonical_id)=? THEN 1
+          WHEN instr(' '||lower(external_ids)||' ',' '||?||' ')>0 THEN 2
+          WHEN lower(canonical_id) LIKE ? ESCAPE '\\' THEN 3
+          WHEN normalized_name=? THEN 4
+          WHEN normalized_name LIKE ? ESCAPE '\\' THEN 5
+          WHEN rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?) THEN 6
+          ELSE 7
+        END
+        """
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        rank_values: list[object] = [
+            normalized,
+            normalized,
+            f"{escaped}%",
+            normalized,
+            f"{escaped}%",
+            fts or '""',
+        ]
+    else:
+        rank_sql = "7"
+        rank_values = []
+    rows = await (
+        await connection.execute(
+            f"""
+            SELECT kind, canonical_id, title, subtitle, external_ids,
+                   {rank_sql} AS rank
+            FROM search_documents
+            WHERE {where}
+            ORDER BY rank, kind, canonical_id
+            LIMIT ? OFFSET ?
+            """,
+            [*rank_values, *values, limit, offset],
+        )
+    ).fetchall()
+    hits = tuple(
+        SearchHit(
+            SearchKind(row["kind"]),
+            row["canonical_id"],
+            row["title"],
+            row["subtitle"],
+            float(8 - int(row["rank"])),
+            "canonical_id" if int(row["rank"]) in {1, 3} else "name",
+            row["canonical_id"] if int(row["rank"]) in {1, 3} else row["title"],
+        )
+        for row in rows
+    )
+    return SearchResult(hits, total, snapshot_id)
