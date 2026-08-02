@@ -478,6 +478,19 @@ async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bulk_mutation_scalar_errors_become_unaccepted_records() -> None:
+    transport = FakeTransport(FakeResponse({"errors": ["part not found"]}))
+    api = client(transport)
+    result = await api.add_user_part_list_parts(
+        1, (PartListPartRequest(part_num="9999", color_id=4, quantity=1),)
+    )
+    assert result.requested_count == 1
+    assert result.accepted == ()
+    assert result.unaccepted_count == 1
+    assert result.unaccepted[0].extra["detail"] == "part not found"
+
+
+@pytest.mark.asyncio
 async def test_explicit_sequential_batch_helpers_succeed() -> None:
     transport = FakeTransport(FakeResponse({}), FakeResponse({}))
     api = client(transport)
