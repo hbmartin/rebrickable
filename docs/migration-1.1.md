@@ -170,7 +170,7 @@ The parts repository adds offline analytical queries:
 ```python
 usage = await session.parts.usage_stats("3001", color_id=4)
 occurrences = await session.parts.used_in_sets(
-    "3001", color_id=4, include_spares=False, limit=100
+    "3001", color_id=4, include_spares=False, limit=100, offset=0
 )
 relationships = await session.parts.relationships("3001")
 variants = await session.parts.variants("3001")
@@ -269,15 +269,20 @@ Global options must precede the subcommand. New command groups and modes are:
 - `catalog path`, `catalog doctor`, `catalog versions`, and `catalog diff`;
 - `bom normalize`, `bom diff`, and `bom validate`;
 - read-only `api part|set|minifig|parts|sets|minifigs` lookups;
-- `part --usage`, `part --sets`, and `part --relationships`;
+- `part --usage`, `part --sets` (with `--color-id`, `--include-spares`,
+  `--limit`, and `--offset`), and `part --relationships`;
 - `set|minifig --inventory --version N`;
 - search year, theme/subtheme, part-count, category, material, and offset
   filters.
 
-The `api` group requires `REBRICKABLE_API_KEY` or a configured `api_key` and
-does not expose account mutations. `catalog doctor` returns invalid-input status
-when it detects the conflicting `pyrebrickable` distribution. Automation that
-asserts exit status should account for that diagnostic result.
+Flags a `part` mode does not use are rejected with invalid-input status instead
+of being silently ignored, as is `--include-subthemes` without `--theme-id`.
+`catalog versions` for an unknown owner exits with missing-data status rather
+than printing an empty result. The `api` group requires `REBRICKABLE_API_KEY`
+or a configured `api_key` and does not expose account mutations. `catalog
+doctor` returns invalid-input status when it detects the conflicting
+`pyrebrickable` distribution. Automation that asserts exit status should
+account for these diagnostic results.
 
 For intentional advanced read-only SQL, `catalog path` prints the active
 snapshot database. Open that path read-only and do not modify package-managed
