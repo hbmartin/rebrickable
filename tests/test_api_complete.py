@@ -405,7 +405,7 @@ async def test_batch_mutation_error_carries_partial_progress() -> None:
     )
     api = client(transport)
     with pytest.raises(BatchMutationError) as captured:
-        await api.add_user_part_list_parts(
+        await api.add_user_part_list_parts_sequential(
             1,
             (
                 PartListPartRequest(part_num="3001", color_id=4, quantity=1),
@@ -415,6 +415,88 @@ async def test_batch_mutation_error_carries_partial_progress() -> None:
     assert captured.value.failed_index == 1
     assert len(captured.value.accepted) == 1
     assert isinstance(captured.value.__cause__, ApiError)
+
+
+@pytest.mark.asyncio
+async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
+    part_transport = FakeTransport(
+        FakeResponse([{"part_num": "3001"}, {"part_num": "3002"}])
+    )
+    api = client(part_transport)
+    result = await api.add_user_part_list_parts(
+        1,
+        (
+            PartListPartRequest(part_num="3001", color_id=4, quantity=1),
+            PartListPartRequest(part_num="3002", color_id=1, quantity=2),
+        ),
+    )
+    assert len(part_transport.requests) == 1
+    assert result.requested_count == result.accepted_count == 2
+    assert result.unaccepted_count == result.skipped_count == 0
+    assert part_transport.requests[0][2]["json"] == [
+        {"part_num": "3001", "color_id": 4, "quantity": 1},
+        {"part_num": "3002", "color_id": 1, "quantity": 2},
+    ]
+
+    set_transport = FakeTransport(FakeResponse({"accepted": [{"set_num": "1-1"}]}))
+    api = client(set_transport)
+    result = await api.add_user_set_list_sets(
+        1,
+        (
+            SetQuantityRequest(set_num="1-1"),
+            SetQuantityRequest(set_num="2-1", quantity=2),
+        ),
+    )
+    assert len(set_transport.requests) == 1
+    assert result.requested_count == 2
+    assert result.accepted_count == 1
+    assert result.unaccepted_count == 1
+
+    skipped_transport = FakeTransport(
+        FakeResponse(
+            {
+                "accepted": [{"set_num": "1-1"}],
+                "skipped": [{"set_num": "2-1"}],
+                "rejected": [{"set_num": "3-1", "detail": "invalid"}],
+            }
+        )
+    )
+    api = client(skipped_transport)
+    result = await api.add_user_sets(
+        tuple(SetQuantityRequest(set_num=f"{number}-1") for number in range(1, 4))
+    )
+    assert (result.accepted_count, result.skipped_count, result.unaccepted_count) == (
+        1,
+        1,
+        1,
+    )
+
+    no_content = FakeTransport(FakeResponse({}, status_code=204))
+    api = client(no_content)
+    result = await api.add_user_sets((SetQuantityRequest(set_num="1-1"),))
+    assert result.accepted == result.requested
+
+
+@pytest.mark.asyncio
+async def test_explicit_sequential_batch_helpers_succeed() -> None:
+    transport = FakeTransport(FakeResponse({}), FakeResponse({}))
+    api = client(transport)
+    parts = await api.add_user_part_list_parts_sequential(
+        1,
+        (
+            PartListPartRequest(part_num="3001", color_id=4, quantity=1),
+            PartListPartRequest(part_num="3002", color_id=4, quantity=1),
+        ),
+    )
+    assert parts.accepted_count == 2
+
+    transport = FakeTransport(FakeResponse({}), FakeResponse({}))
+    api = client(transport)
+    sets = await api.add_user_set_list_sets_sequential(
+        1,
+        (SetQuantityRequest(set_num="1-1"), SetQuantityRequest(set_num="2-1")),
+    )
+    assert sets.accepted_count == 2
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,20 @@ class PartRelationship:
 
 
 @dataclass(frozen=True, slots=True)
+class PartUsage:
+    """Aggregate newest-inventory usage for a canonical part."""
+
+    part: Part
+    total_quantity: int
+    spare_quantity: int
+    set_count: int
+    inventory_count: int
+    color_count: int
+    first_year: int | None
+    last_year: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class Element:
     element_id: str
     part_num: str
@@ -125,6 +139,68 @@ class Inventory:
     parts: tuple[InventoryPart, ...]
     sets: tuple[InventorySet, ...]
     minifigs: tuple[InventoryMinifig, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryVersion:
+    id: int
+    owner_num: str
+    version: int
+    is_latest: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SetOccurrence:
+    """One part/color occurrence in a set's newest inventory."""
+
+    set: Set
+    color: Color
+    quantity: int
+    is_spare: bool
+    inventory_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryDiffRow:
+    part: Part
+    color: Color
+    before_quantity: int
+    after_quantity: int
+    before_spare_quantity: int
+    after_spare_quantity: int
+
+    @property
+    def quantity_delta(self) -> int:
+        return self.after_quantity - self.before_quantity
+
+    @property
+    def spare_quantity_delta(self) -> int:
+        return self.after_spare_quantity - self.before_spare_quantity
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryDiff(Sequence[InventoryDiffRow]):
+    owner_num: str
+    before_version: int
+    after_version: int
+    rows: tuple[InventoryDiffRow, ...]
+
+    def __iter__(self) -> Iterator[InventoryDiffRow]:
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @overload
+    def __getitem__(self, index: int) -> InventoryDiffRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[InventoryDiffRow, ...]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> InventoryDiffRow | tuple[InventoryDiffRow, ...]:
+        return self.rows[index]
 
 
 @dataclass(frozen=True, slots=True)

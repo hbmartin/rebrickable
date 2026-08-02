@@ -8,12 +8,13 @@ import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar, Unpack, cast
 from urllib.parse import quote
 
 import httpx2
 from pydantic import BaseModel
 
+from rebrickable.api import query_types as qt
 from rebrickable.api.decoding import decode_model
 from rebrickable.api.models import (
     ApiAlternateBuild,
@@ -359,7 +360,7 @@ class RebrickableClient:
         model: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Mapping[str, QueryValue] | None = None,
+        query: Any = None,
         form: Mapping[str, Any] | None = None,
         retry_mutation: bool = False,
     ) -> T:
@@ -394,14 +395,52 @@ class RebrickableClient:
             if response.status_code == 204 or not response.text
             else self._json(response, operation_id=operation_id)
         )
-        items = payload if isinstance(payload, list) else [payload]
-        records = tuple(
-            decode_model(
-                ApiRecord, item, operation_id=operation_id, path_template=operation.path
+        requested = tuple(ApiRecord.model_validate(item) for item in json_body)
+
+        def records(value: object) -> tuple[ApiRecord, ...]:
+            if value is None:
+                return ()
+            items = value if isinstance(value, list) else [value]
+            return tuple(
+                decode_model(
+                    ApiRecord,
+                    item,
+                    operation_id=operation_id,
+                    path_template=operation.path,
+                )
+                for item in items
             )
-            for item in items
+
+        if response.status_code == 204 or not response.text:
+            return MutationResult(requested=requested, accepted=requested)
+        if isinstance(payload, dict) and any(
+            key in payload
+            for key in (
+                "accepted",
+                "results",
+                "created",
+                "skipped",
+                "rejected",
+                "errors",
+            )
+        ):
+            accepted = records(
+                payload.get("accepted", payload.get("results", payload.get("created")))
+            )
+            skipped = records(payload.get("skipped"))
+            unaccepted = records(payload.get("rejected", payload.get("errors")))
+        else:
+            accepted = records(payload)
+            skipped = ()
+            unaccepted = ()
+        if not unaccepted and len(accepted) + len(skipped) < len(requested):
+            unaccepted = requested[len(accepted) + len(skipped) :]
+        return MutationResult(
+            requested=requested,
+            accepted=accepted,
+            unaccepted=unaccepted,
+            skipped=skipped,
         )
-        return MutationResult(accepted=records)
 
     async def _page(
         self,
@@ -409,7 +448,7 @@ class RebrickableClient:
         item: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Mapping[str, QueryValue] | None = None,
+        query: Any = None,
         absolute_url: str | None = None,
     ) -> ApiPage[T]:
         response = await self._send(
@@ -433,7 +472,7 @@ class RebrickableClient:
         item: type[T],
         *,
         path: Mapping[str, str | int] | None = None,
-        query: Mapping[str, QueryValue] | None = None,
+        query: Any = None,
     ) -> AsyncIterator[T]:
         options = dict(query or {})
         options.setdefault("page_size", 1_000)
@@ -454,13 +493,19 @@ class RebrickableClient:
             )
 
     # Catalog and specification -------------------------------------------------
-    async def list_colors(self, **query: QueryValue) -> ApiPage[ApiColor]:
+    async def list_colors(
+        self, **query: Unpack[qt.LegoColorsListQuery]
+    ) -> ApiPage[ApiColor]:
         return await self._page("lego_colors_list", ApiColor, query=query)
 
-    def iter_colors(self, **query: QueryValue) -> AsyncIterator[ApiColor]:
+    def iter_colors(
+        self, **query: Unpack[qt.LegoColorsListQuery]
+    ) -> AsyncIterator[ApiColor]:
         return self._iter("lego_colors_list", ApiColor, query=query)
 
-    async def get_color(self, color_id: int, **query: QueryValue) -> ApiColor:
+    async def get_color(
+        self, color_id: int, **query: Unpack[qt.LegoColorsReadQuery]
+    ) -> ApiColor:
         return await self._model(
             "lego_colors_read", ApiColor, path={"id": color_id}, query=query
         )
@@ -470,10 +515,14 @@ class RebrickableClient:
             "lego_elements_read", ApiElement, path={"element_id": element_id}
         )
 
-    async def list_minifigs(self, **query: QueryValue) -> ApiPage[ApiMinifig]:
+    async def list_minifigs(
+        self, **query: Unpack[qt.LegoMinifigsListQuery]
+    ) -> ApiPage[ApiMinifig]:
         return await self._page("lego_minifigs_list", ApiMinifig, query=query)
 
-    def iter_minifigs(self, **query: QueryValue) -> AsyncIterator[ApiMinifig]:
+    def iter_minifigs(
+        self, **query: Unpack[qt.LegoMinifigsListQuery]
+    ) -> AsyncIterator[ApiMinifig]:
         return self._iter("lego_minifigs_list", ApiMinifig, query=query)
 
     async def get_minifig(self, fig_num: str) -> ApiMinifig:
@@ -482,7 +531,7 @@ class RebrickableClient:
         )
 
     async def list_minifig_parts(
-        self, fig_num: str, **query: QueryValue
+        self, fig_num: str, **query: Unpack[qt.LegoMinifigsPartsListQuery]
     ) -> ApiPage[ApiInventoryPart]:
         return await self._page(
             "lego_minifigs_parts_list",
@@ -492,7 +541,7 @@ class RebrickableClient:
         )
 
     def iter_minifig_parts(
-        self, fig_num: str, **query: QueryValue
+        self, fig_num: str, **query: Unpack[qt.LegoMinifigsPartsListQuery]
     ) -> AsyncIterator[ApiInventoryPart]:
         return self._iter(
             "lego_minifigs_parts_list",
@@ -502,33 +551,33 @@ class RebrickableClient:
         )
 
     async def list_minifig_sets(
-        self, fig_num: str, **query: QueryValue
+        self, fig_num: str, **query: Unpack[qt.LegoMinifigsSetsListQuery]
     ) -> ApiPage[ApiSet]:
         return await self._page(
             "lego_minifigs_sets_list", ApiSet, path={"set_num": fig_num}, query=query
         )
 
     def iter_minifig_sets(
-        self, fig_num: str, **query: QueryValue
+        self, fig_num: str, **query: Unpack[qt.LegoMinifigsSetsListQuery]
     ) -> AsyncIterator[ApiSet]:
         return self._iter(
             "lego_minifigs_sets_list", ApiSet, path={"set_num": fig_num}, query=query
         )
 
     async def list_part_categories(
-        self, **query: QueryValue
+        self, **query: Unpack[qt.LegoPartCategoriesListQuery]
     ) -> ApiPage[ApiPartCategory]:
         return await self._page(
             "lego_part_categories_list", ApiPartCategory, query=query
         )
 
     def iter_part_categories(
-        self, **query: QueryValue
+        self, **query: Unpack[qt.LegoPartCategoriesListQuery]
     ) -> AsyncIterator[ApiPartCategory]:
         return self._iter("lego_part_categories_list", ApiPartCategory, query=query)
 
     async def get_part_category(
-        self, category_id: int, **query: QueryValue
+        self, category_id: int, **query: Unpack[qt.LegoPartCategoriesReadQuery]
     ) -> ApiPartCategory:
         return await self._model(
             "lego_part_categories_read",
@@ -537,19 +586,25 @@ class RebrickableClient:
             query=query,
         )
 
-    async def list_parts(self, **query: QueryValue) -> ApiPage[ApiPart]:
+    async def list_parts(
+        self, **query: Unpack[qt.LegoPartsListQuery]
+    ) -> ApiPage[ApiPart]:
         return await self._page("lego_parts_list", ApiPart, query=query)
 
-    def iter_parts(self, **query: QueryValue) -> AsyncIterator[ApiPart]:
+    def iter_parts(
+        self, **query: Unpack[qt.LegoPartsListQuery]
+    ) -> AsyncIterator[ApiPart]:
         return self._iter("lego_parts_list", ApiPart, query=query)
 
-    async def get_part(self, part_num: str, **query: QueryValue) -> ApiPart:
+    async def get_part(
+        self, part_num: str, **query: Unpack[qt.LegoPartsReadQuery]
+    ) -> ApiPart:
         return await self._model(
             "lego_parts_read", ApiPart, path={"part_num": part_num}, query=query
         )
 
     async def list_part_colors(
-        self, part_num: str, **query: QueryValue
+        self, part_num: str, **query: Unpack[qt.LegoPartsColorsListQuery]
     ) -> ApiPage[ApiPartColor]:
         return await self._page(
             "lego_parts_colors_list",
@@ -559,7 +614,7 @@ class RebrickableClient:
         )
 
     def iter_part_colors(
-        self, part_num: str, **query: QueryValue
+        self, part_num: str, **query: Unpack[qt.LegoPartsColorsListQuery]
     ) -> AsyncIterator[ApiPartColor]:
         return self._iter(
             "lego_parts_colors_list",
@@ -576,7 +631,10 @@ class RebrickableClient:
         )
 
     async def list_part_color_sets(
-        self, part_num: str, color_id: int, **query: QueryValue
+        self,
+        part_num: str,
+        color_id: int,
+        **query: Unpack[qt.LegoPartsColorsSetsListQuery],
     ) -> ApiPage[ApiSet]:
         return await self._page(
             "lego_parts_colors_sets_list",
@@ -586,7 +644,10 @@ class RebrickableClient:
         )
 
     def iter_part_color_sets(
-        self, part_num: str, color_id: int, **query: QueryValue
+        self,
+        part_num: str,
+        color_id: int,
+        **query: Unpack[qt.LegoPartsColorsSetsListQuery],
     ) -> AsyncIterator[ApiSet]:
         return self._iter(
             "lego_parts_colors_sets_list",
@@ -595,17 +656,17 @@ class RebrickableClient:
             query=query,
         )
 
-    async def list_sets(self, **query: QueryValue) -> ApiPage[ApiSet]:
+    async def list_sets(self, **query: Unpack[qt.LegoSetsListQuery]) -> ApiPage[ApiSet]:
         return await self._page("lego_sets_list", ApiSet, query=query)
 
-    def iter_sets(self, **query: QueryValue) -> AsyncIterator[ApiSet]:
+    def iter_sets(self, **query: Unpack[qt.LegoSetsListQuery]) -> AsyncIterator[ApiSet]:
         return self._iter("lego_sets_list", ApiSet, query=query)
 
     async def get_set(self, set_num: str) -> ApiSet:
         return await self._model("lego_sets_read", ApiSet, path={"set_num": set_num})
 
     async def list_set_alternates(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsAlternatesListQuery]
     ) -> ApiPage[ApiAlternateBuild]:
         return await self._page(
             "lego_sets_alternates_list",
@@ -615,7 +676,7 @@ class RebrickableClient:
         )
 
     def iter_set_alternates(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsAlternatesListQuery]
     ) -> AsyncIterator[ApiAlternateBuild]:
         return self._iter(
             "lego_sets_alternates_list",
@@ -625,7 +686,7 @@ class RebrickableClient:
         )
 
     async def list_set_minifigs(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsMinifigsListQuery]
     ) -> ApiPage[ApiInventoryMinifig]:
         return await self._page(
             "lego_sets_minifigs_list",
@@ -635,7 +696,7 @@ class RebrickableClient:
         )
 
     def iter_set_minifigs(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsMinifigsListQuery]
     ) -> AsyncIterator[ApiInventoryMinifig]:
         return self._iter(
             "lego_sets_minifigs_list",
@@ -645,7 +706,7 @@ class RebrickableClient:
         )
 
     async def list_set_parts(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsPartsListQuery]
     ) -> ApiPage[ApiInventoryPart]:
         return await self._page(
             "lego_sets_parts_list",
@@ -655,7 +716,7 @@ class RebrickableClient:
         )
 
     def iter_set_parts(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsPartsListQuery]
     ) -> AsyncIterator[ApiInventoryPart]:
         return self._iter(
             "lego_sets_parts_list",
@@ -665,7 +726,7 @@ class RebrickableClient:
         )
 
     async def list_set_sets(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsSetsListQuery]
     ) -> ApiPage[ApiInventorySet]:
         return await self._page(
             "lego_sets_sets_list",
@@ -675,7 +736,7 @@ class RebrickableClient:
         )
 
     def iter_set_sets(
-        self, set_num: str, **query: QueryValue
+        self, set_num: str, **query: Unpack[qt.LegoSetsSetsListQuery]
     ) -> AsyncIterator[ApiInventorySet]:
         return self._iter(
             "lego_sets_sets_list",
@@ -684,13 +745,19 @@ class RebrickableClient:
             query=query,
         )
 
-    async def list_themes(self, **query: QueryValue) -> ApiPage[ApiTheme]:
+    async def list_themes(
+        self, **query: Unpack[qt.LegoThemesListQuery]
+    ) -> ApiPage[ApiTheme]:
         return await self._page("lego_themes_list", ApiTheme, query=query)
 
-    def iter_themes(self, **query: QueryValue) -> AsyncIterator[ApiTheme]:
+    def iter_themes(
+        self, **query: Unpack[qt.LegoThemesListQuery]
+    ) -> AsyncIterator[ApiTheme]:
         return self._iter("lego_themes_list", ApiTheme, query=query)
 
-    async def get_theme(self, theme_id: int, **query: QueryValue) -> ApiTheme:
+    async def get_theme(
+        self, theme_id: int, **query: Unpack[qt.LegoThemesReadQuery]
+    ) -> ApiTheme:
         return await self._model(
             "lego_themes_read", ApiTheme, path={"id": theme_id}, query=query
         )
@@ -704,19 +771,28 @@ class RebrickableClient:
             "users__token_create", ApiUserToken, form=payload.form()
         )
 
-    async def list_badges(self, **query: QueryValue) -> ApiPage[ApiBadge]:
+    async def list_badges(
+        self, **query: Unpack[qt.UsersBadgesListQuery]
+    ) -> ApiPage[ApiBadge]:
         return await self._page("users_badges_list", ApiBadge, query=query)
 
-    def iter_badges(self, **query: QueryValue) -> AsyncIterator[ApiBadge]:
+    def iter_badges(
+        self, **query: Unpack[qt.UsersBadgesListQuery]
+    ) -> AsyncIterator[ApiBadge]:
         return self._iter("users_badges_list", ApiBadge, query=query)
 
-    async def get_badge(self, badge_id: int, **query: QueryValue) -> ApiBadge:
+    async def get_badge(
+        self, badge_id: int, **query: Unpack[qt.UsersBadgesReadQuery]
+    ) -> ApiBadge:
         return await self._model(
             "users_badges_read", ApiBadge, path={"id": badge_id}, query=query
         )
 
     async def list_user_all_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersAllpartsListQuery],
     ) -> ApiPage[ApiUserPart]:
         return await self._page(
             "users_allparts_list",
@@ -726,7 +802,10 @@ class RebrickableClient:
         )
 
     def iter_user_all_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersAllpartsListQuery],
     ) -> AsyncIterator[ApiUserPart]:
         return self._iter(
             "users_allparts_list",
@@ -745,7 +824,10 @@ class RebrickableClient:
         )
 
     async def list_user_lost_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersLostPartsListQuery],
     ) -> ApiPage[ApiLostPart]:
         return await self._page(
             "users_lost_parts_list",
@@ -755,7 +837,10 @@ class RebrickableClient:
         )
 
     def iter_user_lost_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersLostPartsListQuery],
     ) -> AsyncIterator[ApiLostPart]:
         return self._iter(
             "users_lost_parts_list",
@@ -784,7 +869,10 @@ class RebrickableClient:
         )
 
     async def list_user_minifigs(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersMinifigsListQuery],
     ) -> ApiPage[ApiUserMinifig]:
         return await self._page(
             "users_minifigs_list",
@@ -794,7 +882,10 @@ class RebrickableClient:
         )
 
     def iter_user_minifigs(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersMinifigsListQuery],
     ) -> AsyncIterator[ApiUserMinifig]:
         return self._iter(
             "users_minifigs_list",
@@ -804,7 +895,10 @@ class RebrickableClient:
         )
 
     async def list_user_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartsListQuery],
     ) -> ApiPage[ApiUserPart]:
         return await self._page(
             "users_parts_list",
@@ -814,7 +908,10 @@ class RebrickableClient:
         )
 
     def iter_user_parts(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartsListQuery],
     ) -> AsyncIterator[ApiUserPart]:
         return self._iter(
             "users_parts_list",
@@ -832,7 +929,10 @@ class RebrickableClient:
 
     # Part lists ----------------------------------------------------------------
     async def list_user_part_lists(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartlistsListQuery],
     ) -> ApiPage[ApiPartList]:
         return await self._page(
             "users_partlists_list",
@@ -842,7 +942,10 @@ class RebrickableClient:
         )
 
     def iter_user_part_lists(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartlistsListQuery],
     ) -> AsyncIterator[ApiPartList]:
         return self._iter(
             "users_partlists_list",
@@ -904,7 +1007,11 @@ class RebrickableClient:
         )
 
     async def list_user_part_list_parts(
-        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+        self,
+        list_id: int,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartlistsPartsListQuery],
     ) -> ApiPage[ApiPartListPart]:
         return await self._page(
             "users_partlists_parts_list",
@@ -914,7 +1021,11 @@ class RebrickableClient:
         )
 
     def iter_user_part_list_parts(
-        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+        self,
+        list_id: int,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersPartlistsPartsListQuery],
     ) -> AsyncIterator[ApiPartListPart]:
         return self._iter(
             "users_partlists_parts_list",
@@ -930,9 +1041,35 @@ class RebrickableClient:
         *,
         user_token: str | None = None,
     ) -> MutationResult:
-        items = (
-            (payload,) if isinstance(payload, PartListPartRequest) else tuple(payload)
+        path = {
+            "user_token": self._token(user_token),
+            "list_id": list_id,
+        }
+        if isinstance(payload, PartListPartRequest):
+            requested = ApiRecord.model_validate(payload.form())
+            accepted = await self._model(
+                "users_partlists_parts_create",
+                ApiRecord,
+                path=path,
+                form=payload.form(),
+            )
+            return MutationResult(requested=(requested,), accepted=(accepted,))
+        return await self._mutation(
+            "users_partlists_parts_create",
+            path=path,
+            json_body=[item.form() for item in payload],
         )
+
+    async def add_user_part_list_parts_sequential(
+        self,
+        list_id: int,
+        payload: Sequence[PartListPartRequest],
+        *,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        """Add items one request at a time and retain partial-failure details."""
+        items = tuple(payload)
+        requested = tuple(ApiRecord.model_validate(item.form()) for item in items)
         accepted: list[ApiRecord] = []
         for index, item in enumerate(items):
             try:
@@ -951,7 +1088,7 @@ class RebrickableClient:
                 raise BatchMutationError(
                     "users_partlists_parts_create", tuple(accepted), index
                 ) from exc
-        return MutationResult(accepted=tuple(accepted))
+        return MutationResult(requested=requested, accepted=tuple(accepted))
 
     async def get_user_part_list_part(
         self,
@@ -960,7 +1097,7 @@ class RebrickableClient:
         color_id: int,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersPartlistsPartsReadQuery],
     ) -> ApiPartListPart:
         return await self._model(
             "users_partlists_parts_read",
@@ -982,7 +1119,7 @@ class RebrickableClient:
         payload: QuantityRequest,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersPartlistsPartsUpdateQuery],
     ) -> ApiPartListPart:
         return await self._model(
             "users_partlists_parts_update",
@@ -1004,7 +1141,7 @@ class RebrickableClient:
         color_id: int,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersPartlistsPartsDeleteQuery],
     ) -> ApiRecord:
         return await self._model(
             "users_partlists_parts_delete",
@@ -1020,7 +1157,10 @@ class RebrickableClient:
 
     # Set lists and collection sets --------------------------------------------
     async def list_user_set_lists(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetlistsListQuery],
     ) -> ApiPage[ApiSetList]:
         return await self._page(
             "users_setlists_list",
@@ -1030,7 +1170,10 @@ class RebrickableClient:
         )
 
     def iter_user_set_lists(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetlistsListQuery],
     ) -> AsyncIterator[ApiSetList]:
         return self._iter(
             "users_setlists_list",
@@ -1092,7 +1235,11 @@ class RebrickableClient:
         )
 
     async def list_user_set_list_sets(
-        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+        self,
+        list_id: int,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetlistsSetsListQuery],
     ) -> ApiPage[ApiSetListSet]:
         return await self._page(
             "users_setlists_sets_list",
@@ -1102,7 +1249,11 @@ class RebrickableClient:
         )
 
     def iter_user_set_list_sets(
-        self, list_id: int, *, user_token: str | None = None, **query: QueryValue
+        self,
+        list_id: int,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetlistsSetsListQuery],
     ) -> AsyncIterator[ApiSetListSet]:
         return self._iter(
             "users_setlists_sets_list",
@@ -1118,9 +1269,35 @@ class RebrickableClient:
         *,
         user_token: str | None = None,
     ) -> MutationResult:
-        items = (
-            (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
+        path = {
+            "user_token": self._token(user_token),
+            "list_id": list_id,
+        }
+        if isinstance(payload, SetQuantityRequest):
+            requested = ApiRecord.model_validate(payload.form())
+            accepted = await self._model(
+                "users_setlists_sets_create",
+                ApiRecord,
+                path=path,
+                form=payload.form(),
+            )
+            return MutationResult(requested=(requested,), accepted=(accepted,))
+        return await self._mutation(
+            "users_setlists_sets_create",
+            path=path,
+            json_body=[item.form() for item in payload],
         )
+
+    async def add_user_set_list_sets_sequential(
+        self,
+        list_id: int,
+        payload: Sequence[SetQuantityRequest],
+        *,
+        user_token: str | None = None,
+    ) -> MutationResult:
+        """Add sets one request at a time and retain partial-failure details."""
+        items = tuple(payload)
+        requested = tuple(ApiRecord.model_validate(item.form()) for item in items)
         accepted: list[ApiRecord] = []
         for index, item in enumerate(items):
             try:
@@ -1139,7 +1316,7 @@ class RebrickableClient:
                 raise BatchMutationError(
                     "users_setlists_sets_create", tuple(accepted), index
                 ) from exc
-        return MutationResult(accepted=tuple(accepted))
+        return MutationResult(requested=requested, accepted=tuple(accepted))
 
     async def get_user_set_list_set(
         self,
@@ -1147,7 +1324,7 @@ class RebrickableClient:
         set_num: str,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersSetlistsSetsReadQuery],
     ) -> ApiSetListSet:
         return await self._model(
             "users_setlists_sets_read",
@@ -1167,7 +1344,7 @@ class RebrickableClient:
         payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersSetlistsSetsUpdateQuery],
     ) -> ApiSetListSet:
         return await self._model(
             "users_setlists_sets_update",
@@ -1188,7 +1365,7 @@ class RebrickableClient:
         payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersSetlistsSetsPartialUpdateQuery],
     ) -> ApiSetListSet:
         return await self._model(
             "users_setlists_sets_partial_update",
@@ -1208,7 +1385,7 @@ class RebrickableClient:
         set_num: str,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersSetlistsSetsDeleteQuery],
     ) -> ApiRecord:
         return await self._model(
             "users_setlists_sets_delete",
@@ -1222,7 +1399,10 @@ class RebrickableClient:
         )
 
     async def list_user_sets(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetsListQuery],
     ) -> ApiPage[ApiUserSet]:
         return await self._page(
             "users_sets_list",
@@ -1232,7 +1412,10 @@ class RebrickableClient:
         )
 
     def iter_user_sets(
-        self, *, user_token: str | None = None, **query: QueryValue
+        self,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetsListQuery],
     ) -> AsyncIterator[ApiUserSet]:
         return self._iter(
             "users_sets_list",
@@ -1249,10 +1432,11 @@ class RebrickableClient:
     ) -> MutationResult:
         path = {"user_token": self._token(user_token)}
         if isinstance(payload, SetQuantityRequest):
+            requested = ApiRecord.model_validate(payload.form())
             record = await self._model(
                 "users_sets_create", ApiRecord, path=path, form=payload.form()
             )
-            return MutationResult(accepted=(record,))
+            return MutationResult(requested=(requested,), accepted=(record,))
         return await self._mutation(
             "users_sets_create",
             path=path,
@@ -1275,7 +1459,11 @@ class RebrickableClient:
         )
 
     async def get_user_set(
-        self, set_num: str, *, user_token: str | None = None, **query: QueryValue
+        self,
+        set_num: str,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetsReadQuery],
     ) -> ApiUserSet:
         return await self._model(
             "users_sets_read",
@@ -1290,7 +1478,7 @@ class RebrickableClient:
         payload: QuantityRequest,
         *,
         user_token: str | None = None,
-        **query: QueryValue,
+        **query: Unpack[qt.UsersSetsUpdateQuery],
     ) -> ApiUserSet:
         return await self._model(
             "users_sets_update",
@@ -1301,7 +1489,11 @@ class RebrickableClient:
         )
 
     async def delete_user_set(
-        self, set_num: str, *, user_token: str | None = None, **query: QueryValue
+        self,
+        set_num: str,
+        *,
+        user_token: str | None = None,
+        **query: Unpack[qt.UsersSetsDeleteQuery],
     ) -> ApiRecord:
         return await self._model(
             "users_sets_delete",

@@ -159,6 +159,14 @@ def test_openapi_parity_and_public_methods() -> None:
     )
     raw = files("rebrickable.data").joinpath(OPENAPI_RESOURCE).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == OPENAPI_SHA256
+    page = next(
+        parameter
+        for parameter in OPERATIONS["lego_colors_list"].parameter_details
+        if parameter.name == "page"
+    )
+    assert page.location == "query"
+    assert page.schema_type == "integer"
+    assert not page.required
     expected = {
         "lego_colors_list": "list_colors",
         "lego_colors_read": "get_color",

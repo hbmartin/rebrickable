@@ -7,8 +7,8 @@
   official crosswalk data remains unresolved.
 - Relationship records are reviewable candidates, not proof of physical,
   geometric, or appearance equivalence.
-- Historical inventory versions remain stored, but public queries intentionally
-  expose only the newest numeric version.
+- Historical inventory versions are queryable and diffable, but part-usage and
+  availability aggregates intentionally use only the newest numeric version.
 - Element and official inventory evidence establishes historical catalog use. It
   does not establish current manufacture, stock, market price, or availability.
 - API v3 does not provide general MOCs, MOC inventories, B-models, sub-sets, or
@@ -19,6 +19,7 @@
   SQLite to be 3.35 or newer (March 2021). Python's version does not guarantee
   the linked SQLite version; check `sqlite3.sqlite_version` when compatibility
   is uncertain.
-- Opening a session resolves and verifies the active snapshot under the
-  promotion lock, so concurrent opens serialize and may report the catalog as
-  busy after `Config.lock_timeout` seconds.
+- First catalog access (or eager `RebrickableSession.connect()`) resolves and
+  verifies the active snapshot under the promotion lock, so concurrent opens
+  serialize and may report the catalog as busy after `Config.lock_timeout`
+  seconds.

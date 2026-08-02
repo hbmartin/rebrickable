@@ -50,3 +50,29 @@ jobs:
           name: python-package-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+
+  verify-pypi:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Install the exact public artifact with propagation retries
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          for attempt in 1 2 3 4 5 6; do
+            if python -m pip install --no-cache-dir --index-url https://pypi.org/simple "rebrickable==$version"; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              exit 1
+            fi
+            sleep 20
+          done
+          rebrickable --version
+          rebrickable api-spec --output /tmp/openapi.json
+          python -c 'import json; assert json.load(open("/tmp/openapi.json"))["swagger"] == "2.0"'

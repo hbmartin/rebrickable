@@ -28,7 +28,7 @@ jobs:
         run: |
           git diff --quiet && exit 0
           branch="automation/openapi-$(date -u +%Y-%m-%d)"
-          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py
+          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py src/rebrickable/api/query_types.py
           git diff --cached --binary > /tmp/openapi.patch
           git reset
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then

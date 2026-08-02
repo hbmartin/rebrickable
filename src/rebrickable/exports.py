@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from rebrickable.bridge.models import TranslationReport
 from rebrickable.catalog.models import BomRow
 from rebrickable.types import MappingStatus
@@ -33,6 +35,8 @@ TRANSLATION_FIELDS = (
 
 
 def _json_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return _json_value(value.model_dump(mode="json"))
     if is_dataclass(value) and not isinstance(value, type):
         return {
             key: _json_value(item)
@@ -74,6 +78,31 @@ def to_json(value: Any, *, schema: str = "rebrickable") -> str:
         json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
     )
+
+
+def to_csv(value: Any) -> str:
+    """Serialize a record or record sequence with deterministic columns."""
+    data = _json_value(value)
+    records = data if isinstance(data, list) else [data]
+    normalized = [
+        item if isinstance(item, Mapping) else {"value": item} for item in records
+    ]
+    columns = sorted({str(key) for item in normalized for key in item})
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\r\n")
+    writer.writeheader()
+    for item in normalized:
+        writer.writerow(
+            {
+                column: escape_csv_formula(
+                    json.dumps(item.get(column), ensure_ascii=False, sort_keys=True)
+                    if isinstance(item.get(column), Mapping | list)
+                    else str(item.get(column, ""))
+                )
+                for column in columns
+            }
+        )
+    return output.getvalue()
 
 
 def translation_to_csv(

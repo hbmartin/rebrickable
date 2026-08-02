@@ -102,6 +102,9 @@ asyncio.run(main())
 - **Bills of materials.** Recursive expansion through contained sets and
   minifigs with per-row provenance, plus normalization (duplicate merging),
   diff, and validation against the catalog.
+- **Catalog analytics and history.** Query part usage, set occurrences,
+  relationships, theme ancestry/descendants, all upstream inventory versions,
+  and typed version-to-version inventory diffs without live API data.
 - **Import and export.** BrickLink XML, Rebrickable CSV, and JSON, with
   spreadsheet formula escaping on CSV output.
 - **LDraw bridge.** Translate an LDraw model or BOM into Rebrickable parts and
@@ -120,15 +123,19 @@ returns a meaningful exit code (`0` ok, `2` invalid input, `3` missing data,
 | `status`                | Inspect and verify local catalog state              |
 | `refresh`               | Explicitly refresh all catalog datasets (`--force`) |
 | `search QUERY`          | Search the local catalog (`--kind`, `--limit`)      |
-| `part PART_NUM`         | Show one part                                       |
-| `set SET_NUM`           | Show a set, `--inventory`, or `--bom`               |
+| `part PART_NUM`         | Show a part, usage, set occurrences, or relationships |
+| `set SET_NUM`           | Show a set, versioned inventory, or recursive BOM   |
 | `minifig FIG_NUM`       | Show a minifig, `--inventory`, or `--bom`           |
+| `catalog ...`           | Show the DB path, diagnose setup, or compare history |
+| `bom ...`               | Normalize, diff, or validate BOM files              |
+| `api ...`               | Read-only live API lookups using the configured key |
 | `url KIND IDENTIFIER`   | Construct a public Rebrickable page URL             |
 | `translate-ldraw MODEL` | Translate an LDraw model BOM (`--unresolved-only`)  |
 | `api-spec`              | Print the vendored OpenAPI document                 |
 
-`status`, `refresh`, `search`, `part`, `set`, `minifig`, and `translate-ldraw`
-accept `--json`; BOM and translation output also accept `--csv`.
+Use global `--format table|json|csv|yaml`; legacy per-command `--json` and BOM or
+translation `--csv` flags remain supported. `search` exposes all catalog
+filters, including recursive subtheme matching and offsets.
 
 ## Live API v3
 
@@ -163,8 +170,9 @@ opt-in. User tokens and passwords are never written to disk.
   cached, rendered, or opened.
 - API v3 exposes no general MOCs, MOC inventories, B-models, sub-sets, or
   pricing; alternate builds are the only MOC surface.
-- Only the newest numeric inventory version is exposed publicly, and part
-  relationships are reviewable candidates rather than proof of equivalence.
+- Part relationships are reviewable candidates rather than proof of physical
+  equivalence. Historical inventory versions report upstream history, not
+  manufacturing or market availability.
 - Search ranking requires the runtime SQLite to be 3.35 or newer (March 2021);
   check `sqlite3.sqlite_version` if compatibility is uncertain.
 
@@ -173,6 +181,7 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 ## Documentation
 
 - [Quickstart](https://hbmartin.github.io/rebrickable/quickstart/)
+- [Migrating from 1.0 to 1.1](https://hbmartin.github.io/rebrickable/migration-1.1/)
 - [CLI reference](https://hbmartin.github.io/rebrickable/cli/)
 - [Data model](https://hbmartin.github.io/rebrickable/data-model/)
 - [API client](https://hbmartin.github.io/rebrickable/api/)
@@ -207,6 +216,18 @@ through markers: `-m integration` uses current Rebrickable downloads or the
 API, and `-m mutation` performs guarded user-account mutations. CI enforces
 Ruff with `select = ["ALL"]`, two type checkers, and 97% branch coverage across
 Python 3.12, 3.13, and 3.14.
+
+Contributions should include focused tests, pass the commands above, preserve
+the async-only API, and avoid network access in unit tests. Open an issue before
+large compatibility or data-model changes. Report vulnerabilities privately
+through GitHub's **Security → Report a vulnerability** flow; do not open a
+public issue for an undisclosed security problem. Supported releases receive
+security fixes on the latest published version.
+
+If migrating from the unrelated `pyrebrickable` distribution, uninstall it
+before installing this package: the projects have different imports, models,
+and compatibility guarantees. `rebrickable catalog doctor` detects a concurrent
+`pyrebrickable` installation and reports the active catalog and runtime details.
 
 ## Status and license
 
