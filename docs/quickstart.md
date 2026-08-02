@@ -1,6 +1,6 @@
 # Quickstart
 
-Install the stable library with Python 3.12 or newer:
+Install the beta library with Python 3.12 or newer:
 
 ```console
 uv add rebrickable

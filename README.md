@@ -106,8 +106,8 @@ asyncio.run(main())
   spreadsheet formula escaping on CSV output.
 - **LDraw bridge.** Translate an LDraw model or BOM into Rebrickable parts and
   colors, with resolved/ambiguous/unresolved status per row.
-- **Typed and async throughout.** Ships `py.typed`, every I/O path is `async`,
-  and no catalog operation makes an implicit network call.
+- **Typed and async-first.** Ships `py.typed`, exposes asynchronous catalog and
+  API operations, and makes no implicit network calls from catalog queries.
 
 ## CLI
 
@@ -180,7 +180,7 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 - [Agent recipes](https://hbmartin.github.io/rebrickable/agent-recipes/) — bounded-output patterns for LLM agents
 - [TUI integration](https://hbmartin.github.io/rebrickable/tui-integration/) — read-only embedding guide
 - [Limitations](https://hbmartin.github.io/rebrickable/limitations/)
-- [Changelog](https://github.com/hbmartin/rebrickable/blob/main/CHANGELOG.md)
+- [Issue tracker](https://github.com/hbmartin/rebrickable/issues)
 
 ## Related projects
 
@@ -196,7 +196,7 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 ## Development
 
 ```console
-uv sync --all-groups
+uv sync --all-extras --all-groups
 uv run ruff check src scripts tests
 uv run ty check src/rebrickable
 uv run pytest
@@ -210,8 +210,8 @@ Python 3.12, 3.13, and 3.14.
 
 ## Status and license
 
-Version 1.0.0 is a stable release with a committed public API. Breaking changes
-will follow semantic versioning.
+The package is in beta while its first public release receives wider integration
+testing. Breaking changes follow semantic versioning.
 
 Distributed under GPL-3.0-or-later. See
 [LICENSE.txt](https://github.com/hbmartin/rebrickable/blob/main/LICENSE.txt).
