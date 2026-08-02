@@ -185,24 +185,32 @@ def test_part_mode_flag_validation_and_offset(
     assert cli.main(["--format", "json", *arguments]) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
     assert [row["set"]["set_num"] for row in rows] == ["200-1"]
-    assert (
-        cli.main(
-            [
-                "part",
-                "3001",
-                "--sets",
-                "--color-id",
-                "4",
-                "--include-spares",
-                "--limit",
-                "5",
-                "--offset",
-                "0",
-            ]
-        )
-        == 0
-    )
-    assert "SetOccurrence" in capsys.readouterr().out
+    color_arguments = [
+        "part",
+        "3001",
+        "--sets",
+        "--color-id",
+        "4",
+        "--limit",
+        "5",
+        "--offset",
+        "0",
+    ]
+    assert cli.main(["--format", "json", *color_arguments]) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert [
+        (row["set"]["set_num"], row["color"]["id"], row["is_spare"]) for row in rows
+    ] == [("100-1", 4, False)]
+
+    spare_arguments = ["part", "3002", "--sets", "--color-id", "4"]
+    assert cli.main(["--format", "json", *spare_arguments]) == 0
+    assert json.loads(capsys.readouterr().out)["data"] == []
+    assert cli.main(["--format", "json", *spare_arguments, "--include-spares"]) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert [
+        (row["set"]["set_num"], row["color"]["id"], row["is_spare"]) for row in rows
+    ] == [("100-1", 4, True)]
+
     assert cli.main(["part", "3001", "--usage", "--color-id", "4", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["data"]["set_count"] == 1
 

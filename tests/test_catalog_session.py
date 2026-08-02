@@ -239,6 +239,52 @@ async def test_theme_parent_cycle_traversal_terminates(
 
 
 @pytest.mark.asyncio
+async def test_theme_traversal_and_search_stop_at_depth_100(
+    catalog_config: Config,
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    connection = sqlite3.connect(paths.database_for("fixture-snapshot"))
+    try:
+        connection.executemany(
+            "INSERT INTO themes(id, name, parent_id) VALUES (?, ?, ?)",
+            (
+                (theme_id, f"Theme {theme_id}", theme_id - 1)
+                for theme_id in range(2, 103)
+            ),
+        )
+        connection.execute("UPDATE sets SET theme_id=101 WHERE set_num='100-1'")
+        connection.execute("UPDATE sets SET theme_id=102 WHERE set_num='200-1'")
+        connection.execute(
+            "UPDATE search_documents SET theme_id=101 "
+            "WHERE kind='set' AND canonical_id='100-1'"
+        )
+        connection.execute(
+            "UPDATE search_documents SET theme_id=102 "
+            "WHERE kind='set' AND canonical_id='200-1'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    async with await RebrickableSession.open(catalog_config) as session:
+        assert [item.id for item in await session.themes.lineage(101)] == list(
+            range(1, 102)
+        )
+        assert [item.id for item in await session.themes.lineage(102)] == list(
+            range(2, 103)
+        )
+        assert [item.id for item in await session.themes.descendants(1)] == list(
+            range(2, 102)
+        )
+        result = await session.search(
+            "",
+            kinds={SearchKind.SET},
+            filters=SearchFilters(theme_id=1, include_subthemes=True),
+        )
+        assert [hit.canonical_id for hit in result.hits] == ["100-1"]
+
+
+@pytest.mark.asyncio
 async def test_eager_connect_fails_for_missing_catalog(tmp_path: Path) -> None:
     config = Config(
         database_path=tmp_path / "missing.sqlite", cache_path=tmp_path / "cache"
