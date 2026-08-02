@@ -123,6 +123,14 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
                 "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
             )
         connection.execute(
+            "DELETE FROM api_crosswalk_cache WHERE entity_kind='part' "
+            "AND canonical_id NOT IN (SELECT part_num FROM parts)"
+        )
+        connection.execute(
+            "DELETE FROM api_crosswalk_cache WHERE entity_kind='color' "
+            "AND canonical_id NOT IN (SELECT CAST(id AS TEXT) FROM colors)"
+        )
+        connection.execute(
             """
             UPDATE search_documents
             SET external_ids=trim(coalesce((

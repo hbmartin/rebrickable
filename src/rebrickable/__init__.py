@@ -15,6 +15,7 @@ from rebrickable.bom import (
 from rebrickable.bridge import (
     ColorMatch,
     LDrawBomItem,
+    LDrawBridge,
     LDrawColorInfo,
     MatchCandidate,
     PartMatch,
@@ -136,6 +137,7 @@ __all__ = [
     "InventoryPart",
     "InventorySet",
     "LDrawBomItem",
+    "LDrawBridge",
     "LDrawColorInfo",
     "MappingSource",
     "MappingStatus",

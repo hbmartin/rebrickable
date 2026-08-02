@@ -16,10 +16,12 @@ from rebrickable import (
     MappingStatus,
     PartRef,
     RebrickableSession,
+    SearchKind,
 )
 from rebrickable.api.models import ApiColor, ApiPart
 from rebrickable.bridge.cache import store_crosswalks
 from rebrickable.bridge.ldraw import _external_values
+from rebrickable.bridge.overrides import materialize_overrides, write_overrides
 from rebrickable.catalog.database import CatalogPaths
 from rebrickable.config import Config
 from rebrickable.errors import OptionalDependencyError
@@ -216,7 +218,132 @@ async def test_explicit_api_enrichment(catalog_config: Config) -> None:
             )
 
     async with await RebrickableSession.open(catalog_config) as session:
+        assert (await session.parts.require("3001")).part_num == "3001"
         assert await session.ldraw.enrich_part_mapping("3001", Client()) == (
             "ldraw-3001",
         )
+        resolved = await session.ldraw.resolve_ldraw_part("ldraw-3001")
+        assert resolved.target_identifier == "3001"
+        assert resolved.source is MappingSource.API_EXTERNAL_ID
         assert await session.ldraw.enrich_color_mapping(4, Client()) == ("4",)
+
+
+@pytest.mark.asyncio
+async def test_enrich_replaces_stale_crosswalk_rows(catalog_config: Config) -> None:
+    database = database_for(catalog_config)
+    connection = sqlite3.connect(database)
+    connection.executemany(
+        "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            ("part", "ldraw", "old-id", "3001", "op", "2026-08-01", "abc"),
+            ("part", "ldraw", "shared", "9999", "op", "2026-08-01", "abc"),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=("shared",),
+        operation_id="lego_parts_read",
+        response_payload={"part_num": "3001"},
+    )
+    connection = sqlite3.connect(database)
+    try:
+        rows = connection.execute(
+            "SELECT external_id, canonical_id FROM api_crosswalk_cache "
+            "WHERE entity_kind='part' AND external_system='ldraw'"
+        ).fetchall()
+        assert rows == [("shared", "3001")]
+        external = connection.execute(
+            "SELECT external_ids FROM search_documents "
+            "WHERE kind='part' AND canonical_id='3001'"
+        ).fetchone()[0]
+        assert external == "3001 shared"
+        connection.execute(
+            "INSERT INTO search_fts(search_fts) VALUES('integrity-check')"
+        )
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_multi_row_crosswalk_is_ambiguous(catalog_config: Config) -> None:
+    connection = sqlite3.connect(database_for(catalog_config))
+    connection.executemany(
+        "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            ("part", "ldraw", "dual", "3001", "op", "2026-08-01", "abc"),
+            ("part", "ldraw", "dual", "3002", "op", "2026-08-01", "abc"),
+            ("color", "ldraw", "9", "1", "op", "2026-08-01", "abc"),
+            ("color", "ldraw", "9", "4", "op", "2026-08-01", "abc"),
+        ),
+    )
+    connection.commit()
+    connection.close()
+    async with await RebrickableSession.open(catalog_config) as session:
+        part = await session.ldraw.resolve_ldraw_part("dual")
+        assert part.status is MappingStatus.AMBIGUOUS
+        assert part.source is MappingSource.API_EXTERNAL_ID
+        assert tuple(item.identifier for item in part.candidates) == ("3001", "3002")
+        color = await session.ldraw.resolve_ldraw_color(9)
+        assert color.status is MappingStatus.AMBIGUOUS
+        assert tuple(item.identifier for item in color.candidates) == ("1", "4")
+
+
+@pytest.mark.asyncio
+async def test_multiple_overrides_for_one_part_surface_ambiguity(
+    catalog_config: Config,
+) -> None:
+    overrides = catalog_config.mapping_overrides_path
+    assert overrides is not None
+    write_overrides(
+        overrides,
+        (
+            {
+                "entity_kind": "part",
+                "source_system": "ldraw",
+                "source_id": "alpha",
+                "target_system": "rebrickable",
+                "target_id": "3001",
+                "reason": "",
+            },
+            {
+                "entity_kind": "part",
+                "source_system": "ldraw",
+                "source_id": "beta",
+                "target_system": "rebrickable",
+                "target_id": "3001",
+                "reason": "",
+            },
+        ),
+    )
+    materialize_overrides(overrides, database_for(catalog_config))
+    async with await RebrickableSession.open(catalog_config) as session:
+        match = await session.ldraw.resolve_rebrickable_part("3001")
+        assert match.status is MappingStatus.AMBIGUOUS
+        assert match.source is MappingSource.USER_OVERRIDE
+        assert tuple(item.identifier for item in match.candidates) == ("alpha", "beta")
+
+
+@pytest.mark.asyncio
+async def test_targeted_fts_after_override_lifecycle(catalog_config: Config) -> None:
+    async with await RebrickableSession.open(catalog_config) as session:
+        await session.ldraw.record_part_override("weird.dat", "3002")
+        found = await session.search("weird", kinds={SearchKind.PART})
+        assert found.total == 1
+        assert found.hits[0].canonical_id == "3002"
+        assert found.hits[0].matched_field == "external_id"
+        await session.ldraw.remove_part_override("weird.dat")
+        gone = await session.search("weird", kinds={SearchKind.PART})
+        assert gone.total == 0
+    connection = sqlite3.connect(database_for(catalog_config))
+    try:
+        connection.execute(
+            "INSERT INTO search_fts(search_fts) VALUES('integrity-check')"
+        )
+    finally:
+        connection.close()

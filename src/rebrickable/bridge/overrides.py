@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from rebrickable.errors import ConfigLoadError
+from rebrickable.types import normalize_ldraw_code
 
 
 def read_overrides(path: Path | None) -> tuple[dict[str, str], ...]:
@@ -38,6 +39,21 @@ def read_overrides(path: Path | None) -> tuple[dict[str, str], ...]:
             target_id = str(item.get("target_id", ""))
             if not source_id or not target_id:
                 raise ConfigLoadError("mapping override identifiers must not be empty")
+            if kind == "part" and source_system == "ldraw":
+                source_id = normalize_ldraw_code(source_id)
+                if not source_id:
+                    raise ConfigLoadError(
+                        "mapping override identifiers must not be empty"
+                    )
+            if kind == "color":
+                try:
+                    int(source_id)
+                    int(target_id)
+                except ValueError as exc:
+                    raise ConfigLoadError(
+                        "color mapping override identifiers must be integers: "
+                        f"{source_id!r} -> {target_id!r}"
+                    ) from exc
             records.append(
                 {
                     "entity_kind": kind,

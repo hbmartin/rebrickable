@@ -36,6 +36,12 @@ if TYPE_CHECKING:
     from rebrickable.api.client import RebrickableClient
     from rebrickable.session import RebrickableSession
 
+_STATUS_SEVERITY = {
+    MappingStatus.RESOLVED: 0,
+    MappingStatus.AMBIGUOUS: 1,
+    MappingStatus.UNRESOLVED: 2,
+}
+
 
 class LDrawBridge:
     def __init__(self, session: RebrickableSession) -> None:
@@ -73,7 +79,6 @@ class LDrawBridge:
 
         dto = await client.get_part(part_num, inc_part_details=1)
         values = _external_values(dto.external_ids, "ldraw")
-        await self._session.close()
         await asyncio.to_thread(
             store_crosswalks,
             self._session.config,
@@ -94,7 +99,6 @@ class LDrawBridge:
 
         dto = await client.get_color(color_id)
         values = _external_values(dto.external_ids, "ldraw")
-        await self._session.close()
         await asyncio.to_thread(
             store_crosswalks,
             self._session.config,
@@ -119,15 +123,11 @@ class LDrawBridge:
             color_match = await self.resolve_ldraw_color(
                 (colors or {}).get(item.color_code, item.color_code)
             )
-            if (
-                part_match.status is MappingStatus.RESOLVED
-                and color_match.status is MappingStatus.RESOLVED
-            ):
-                status = MappingStatus.RESOLVED
-            elif MappingStatus.AMBIGUOUS in {part_match.status, color_match.status}:
-                status = MappingStatus.AMBIGUOUS
-            else:
-                status = MappingStatus.UNRESOLVED
+            status = max(
+                part_match.status,
+                color_match.status,
+                key=_STATUS_SEVERITY.__getitem__,
+            )
             rows.append(
                 TranslatedBomRow(
                     item.part_num,
@@ -302,9 +302,6 @@ def _persist_override(
                     (entity_kind, "ldraw", source_id, "rebrickable", target_id, reason),
                 )
                 _update_search_document(connection, entity_kind, target_id)
-                connection.execute(
-                    "INSERT INTO search_fts(search_fts) VALUES('rebuild')"
-                )
                 connection.commit()
             finally:
                 connection.close()
@@ -347,9 +344,6 @@ def _delete_override(
                 )
                 for target_id in affected:
                     _update_search_document(connection, entity_kind, target_id)
-                connection.execute(
-                    "INSERT INTO search_fts(search_fts) VALUES('rebuild')"
-                )
                 connection.commit()
             finally:
                 connection.close()

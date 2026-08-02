@@ -47,6 +47,27 @@ def store_crosswalks(
     with lock:
         connection = sqlite3.connect(database)
         try:
+            affected = {canonical_id}
+            if external_ids:
+                placeholders = ",".join("?" for _ in external_ids)
+                stale = connection.execute(
+                    "SELECT DISTINCT canonical_id FROM api_crosswalk_cache "
+                    "WHERE entity_kind=? AND external_system=? "
+                    f"AND external_id IN ({placeholders})",
+                    (entity_kind, external_system, *external_ids),
+                ).fetchall()
+                affected.update(str(row[0]) for row in stale)
+                connection.execute(
+                    "DELETE FROM api_crosswalk_cache "
+                    "WHERE entity_kind=? AND external_system=? "
+                    f"AND external_id IN ({placeholders})",
+                    (entity_kind, external_system, *external_ids),
+                )
+            connection.execute(
+                "DELETE FROM api_crosswalk_cache "
+                "WHERE entity_kind=? AND external_system=? AND canonical_id=?",
+                (entity_kind, external_system, canonical_id),
+            )
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO api_crosswalk_cache
@@ -65,8 +86,8 @@ def store_crosswalks(
                     for external_id in external_ids
                 ),
             )
-            _update_search_document(connection, entity_kind, canonical_id)
-            connection.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')")
+            for item in sorted(affected):
+                _update_search_document(connection, entity_kind, item)
             connection.commit()
         finally:
             connection.close()
@@ -75,6 +96,7 @@ def store_crosswalks(
 def _update_search_document(
     connection: sqlite3.Connection, entity_kind: str, canonical_id: str
 ) -> None:
+    """Refresh one document's external ids and its FTS rows in place."""
     rows = connection.execute(
         """
         SELECT external_id FROM api_crosswalk_cache
@@ -86,7 +108,24 @@ def _update_search_document(
         """,
         (entity_kind, canonical_id, entity_kind, canonical_id),
     ).fetchall()
-    connection.execute(
-        "UPDATE search_documents SET external_ids=? WHERE kind=? AND canonical_id=?",
-        (" ".join(str(row[0]) for row in rows), entity_kind, canonical_id),
-    )
+    external = " ".join(str(row[0]) for row in rows)
+    documents = connection.execute(
+        "SELECT rowid, canonical_id, title, subtitle, external_ids "
+        "FROM search_documents WHERE kind=? AND canonical_id=?",
+        (entity_kind, canonical_id),
+    ).fetchall()
+    for document in documents:
+        connection.execute(
+            "INSERT INTO search_fts(search_fts, rowid, canonical_id, title,"
+            " subtitle, external_ids) VALUES('delete', ?, ?, ?, ?, ?)",
+            (document[0], document[1], document[2], document[3], document[4]),
+        )
+        connection.execute(
+            "UPDATE search_documents SET external_ids=? WHERE rowid=?",
+            (external, document[0]),
+        )
+        connection.execute(
+            "INSERT INTO search_fts(rowid, canonical_id, title, subtitle,"
+            " external_ids) VALUES(?, ?, ?, ?, ?)",
+            (document[0], document[1], document[2], document[3], external),
+        )

@@ -13,6 +13,12 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | MappingProxyType
 
 
+def normalize_ldraw_code(value: str) -> str:
+    """Normalize an LDraw part reference for comparison and storage."""
+    normalized = value.replace("\\", "/").casefold().strip()
+    return normalized.removesuffix(".dat")
+
+
 class CatalogStatus(StrEnum):
     READY = "ready"
     MISSING = "missing"

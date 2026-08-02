@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sqlite3
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,37 @@ async def test_snapshot_retention_keeps_prior_snapshots(
     report = await refresh_catalog(config)
     remaining = {child.name for child in paths.snapshots_dir.iterdir()}
     assert remaining == {"fixture-snapshot", report.snapshot_id}
+
+
+@pytest.mark.asyncio
+async def test_carry_crosswalk_drops_vanished_canonicals(
+    catalog_config: Config, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    active_db = (
+        paths.snapshots_dir / "fixture-snapshot" / catalog_config.database_path.name
+    )
+    connection = sqlite3.connect(active_db)
+    connection.executemany(
+        "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            ("part", "ldraw", "kept", "3001", "op", "2026-08-01", "abc"),
+            ("part", "ldraw", "orphan", "gone", "op", "2026-08-01", "abc"),
+            ("color", "ldraw", "7", "12345", "op", "2026-08-01", "abc"),
+        ),
+    )
+    connection.commit()
+    connection.close()
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr("rebrickable.refresh._download_one", downloader(sources))
+    report = await refresh_catalog(catalog_config)
+    connection = sqlite3.connect(paths.database_for(report.snapshot_id))
+    rows = connection.execute(
+        "SELECT entity_kind, external_id, canonical_id FROM api_crosswalk_cache"
+    ).fetchall()
+    connection.close()
+    assert ("part", "kept", "3001") in rows
+    assert all(row[2] not in {"gone", "12345"} for row in rows)
 
 
 @pytest.mark.asyncio

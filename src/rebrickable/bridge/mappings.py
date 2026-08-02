@@ -10,15 +10,18 @@ from rebrickable.bridge.models import (
     MatchCandidate,
     PartMatch,
 )
-from rebrickable.types import MappingSource, MappingStatus
+from rebrickable.types import MappingSource, MappingStatus, normalize_ldraw_code
 
 if TYPE_CHECKING:
     from rebrickable.session import RebrickableSession
 
-
-def normalize_ldraw_code(value: str) -> str:
-    normalized = value.replace("\\", "/").casefold().strip()
-    return normalized.removesuffix(".dat")
+__all__ = [
+    "normalize_ldraw_code",
+    "resolve_ldraw_color",
+    "resolve_ldraw_part",
+    "resolve_rebrickable_color",
+    "resolve_rebrickable_part",
+]
 
 
 async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> PartMatch:
@@ -68,6 +71,22 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
             1.0,
             (),
             "API-confirmed external identifier",
+            snapshot,
+        )
+    if cached:
+        return PartMatch(
+            ldraw_code,
+            None,
+            MappingStatus.AMBIGUOUS,
+            MappingSource.API_EXTERNAL_ID,
+            0.0,
+            tuple(
+                MatchCandidate(
+                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                )
+                for row in cached
+            ),
+            "multiple API-confirmed canonical identifiers",
             snapshot,
         )
     exact = await (
@@ -128,7 +147,7 @@ async def resolve_rebrickable_part(
     override = tuple(
         await (
             await connection.execute(
-                "SELECT source_id FROM user_mapping_overrides WHERE entity_kind='part' AND target_system='rebrickable' AND target_id=? AND source_system='ldraw'",
+                "SELECT source_id FROM user_mapping_overrides WHERE entity_kind='part' AND target_system='rebrickable' AND target_id=? AND source_system='ldraw' ORDER BY source_id",
                 (part_num,),
             )
         ).fetchall()
@@ -142,6 +161,20 @@ async def resolve_rebrickable_part(
             1.0,
             (),
             "explicit user override",
+            snapshot,
+        )
+    if override:
+        return PartMatch(
+            part_num,
+            None,
+            MappingStatus.AMBIGUOUS,
+            MappingSource.USER_OVERRIDE,
+            0.0,
+            tuple(
+                MatchCandidate(str(row[0]), None, "user override", 1.0)
+                for row in override
+            ),
+            "multiple user overrides map to this part",
             snapshot,
         )
     cached = tuple(
@@ -163,20 +196,44 @@ async def resolve_rebrickable_part(
             "API-confirmed external identifier",
             snapshot,
         )
+    if cached:
+        return PartMatch(
+            part_num,
+            None,
+            MappingStatus.AMBIGUOUS,
+            MappingSource.API_EXTERNAL_ID,
+            0.0,
+            tuple(
+                MatchCandidate(
+                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                )
+                for row in cached
+            ),
+            "multiple API-confirmed external identifiers",
+            snapshot,
+        )
     exact = await (
         await connection.execute(
-            "SELECT part_num FROM parts WHERE part_num=?", (part_num,)
+            "SELECT part_num, name FROM parts WHERE part_num=?", (part_num,)
         )
     ).fetchone()
     if exact:
         return PartMatch(
             part_num,
-            normalize_ldraw_code(part_num),
-            MappingStatus.RESOLVED,
+            None,
+            MappingStatus.AMBIGUOUS,
             MappingSource.EXACT_CANONICAL_ID,
-            0.98,
-            (),
-            "normalized identifiers are equal",
+            0.0,
+            (
+                MatchCandidate(
+                    normalize_ldraw_code(part_num),
+                    exact[1],
+                    "same-identifier heuristic; LDraw existence unverified",
+                    0.5,
+                ),
+            ),
+            "identifier exists in Rebrickable; confirm with enrich_part_mapping"
+            " or an override",
             snapshot,
         )
     return PartMatch(
@@ -232,6 +289,22 @@ async def resolve_ldraw_color(
             1.0,
             (),
             "API-confirmed external identifier",
+            snapshot,
+        )
+    if cached:
+        return ColorMatch(
+            code,
+            None,
+            MappingStatus.AMBIGUOUS,
+            MappingSource.API_EXTERNAL_ID,
+            0.0,
+            tuple(
+                MatchCandidate(
+                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                )
+                for row in cached
+            ),
+            "multiple API-confirmed canonical identifiers",
             snapshot,
         )
     if isinstance(color, int):

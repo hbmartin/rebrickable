@@ -94,9 +94,12 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
         assert await session.external_ids(PartRef("bricklink", "missing")) == ()
         assert await session.substitutes(PartRef("rebrickable", "missing")) == ()
         assert await session.ldraw.resolve_rebrickable_part("3001")
-        assert (
-            await session.ldraw.resolve_rebrickable_part("3002")
-        ).target_identifier == "3002"
+        reverse = await session.ldraw.resolve_rebrickable_part("3002")
+        assert reverse.status is MappingStatus.AMBIGUOUS
+        assert reverse.target_identifier is None
+        assert reverse.candidates[0].identifier == "3002"
+        assert reverse.candidates[0].confidence == 0.5
+        assert await session.ldraw.find_ldraw_candidates("3002") == ("3002",)
         assert (
             await session.ldraw.resolve_rebrickable_part("missing")
         ).status is MappingStatus.UNRESOLVED
@@ -250,12 +253,17 @@ def test_override_file_validation_and_atomic_failure(
         "version: 1\nparts: bad",
         "version: 1\nparts: [bad]",
         "version: 1\nparts: [{source_id: ''}]",
+        "version: 1\nparts: [{source_id: '.dat', target_id: '3001'}]",
+        "version: 1\ncolors: [{source_id: x, target_id: '4'}]",
+        "version: 1\ncolors: [{source_id: '4', target_id: xyz}]",
     ):
         path.write_text(payload)
         with pytest.raises(ConfigLoadError):
             read_overrides(path)
     path.write_text("\n")
     assert read_overrides(path) == ()
+    path.write_text("version: 1\nparts: [{source_id: 3001.DAT, target_id: '3001'}]")
+    assert read_overrides(path)[0]["source_id"] == "3001"
     path.write_bytes(b"\xff")
     with pytest.raises(ConfigLoadError):
         read_overrides(path)
