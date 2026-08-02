@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE.txt"]
 authors = [{ name = "Harold Martin", email = "harold.martin@gmail.com" }]
 classifiers = [
-  "Development Status :: 5 - Production/Stable",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Intended Audience :: End Users/Desktop",
   "Operating System :: OS Independent",
@@ -36,7 +36,7 @@ ldraw = ["pyldraw3>=1.5,<2"]
 Homepage = "https://github.com/hbmartin/rebrickable"
 Repository = "https://github.com/hbmartin/rebrickable"
 Documentation = "https://hbmartin.github.io/rebrickable/"
-Changelog = "https://github.com/hbmartin/rebrickable/releases"
+Issues = "https://github.com/hbmartin/rebrickable/issues"
 
 [project.scripts]
 rebrickable = "rebrickable.cli:main"

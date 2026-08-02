@@ -1,6 +1,8 @@
 """Typed offline-first Rebrickable library."""
 
-__version__ = "1.0.0"
+from importlib.metadata import version as _distribution_version
+
+__version__ = _distribution_version("rebrickable")
 
 from rebrickable.api import ApiPage, RebrickableClient
 from rebrickable.bom import (

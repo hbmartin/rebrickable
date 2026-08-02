@@ -1,4 +1,4 @@
-# ruff: noqa: ANN202, ARG001, ARG002, ARG005, PT018
+# ruff: noqa: ANN202, ARG001, ARG002, PT018
 from __future__ import annotations
 
 import asyncio
@@ -6,12 +6,12 @@ import gzip
 import json
 import shutil
 import sqlite3
-import sys
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
+import ldraw
 import pytest
 from pydantic import ValidationError
 
@@ -157,7 +157,7 @@ async def test_bom_skips_missing_sub_inventories(catalog_config: Config) -> None
 
 @pytest.mark.asyncio
 async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
-    catalog_config: Config, monkeypatch
+    catalog_config: Config, tmp_path: Path
 ) -> None:
     database = database_for(catalog_config)
     connection = sqlite3.connect(database)
@@ -194,57 +194,73 @@ async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
         assert report.ambiguous_count == 1
         assert translation_to_csv(report, unresolved_only=True).count("\r\n") == 2
 
-        fake_parts = SimpleNamespace(
-            colours_by_code={
-                99: SimpleNamespace(code=99, name="Any", rgb="05131D", alpha=None),
-                "x": SimpleNamespace(code="x", name="Bad", rgb="000000", alpha=None),
-            }
+        library = tmp_path / "ldraw"
+        parts_directory = library / "parts"
+        parts_directory.mkdir(parents=True)
+        parts_list = library / "parts.lst"
+        parts_list.write_text("3001.DAT Brick 2 x 4\n", encoding="utf-8")
+        (library / "LDConfig.ldr").write_text(
+            "0 !COLOUR Black CODE 99 VALUE #05131D EDGE #333333\n",
+            encoding="utf-8",
         )
-        module = ModuleType("ldraw")
-        module.bill_of_materials = lambda model, parts=None: [
-            SimpleNamespace(
-                part="3001", colour_code=99 if parts is not None else 4, quantity=1
-            )
-        ]
-        module.Parts = SimpleNamespace(get=lambda path: fake_parts)
-        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
-            model=object(), diagnostics=(), complete=True
+        (parts_directory / "3001.dat").write_text(
+            "0 Brick 2 x 4\n0 Name: 3001.dat\n0 !LDRAW_ORG Part\n0 BFC CERTIFY CCW\n",
+            encoding="utf-8",
         )
-        monkeypatch.setitem(sys.modules, "ldraw", module)
-        assert (await session.ldraw.translate_model(object())).resolved_count == 1
-        with_parts = await session.ldraw.translate_model(object(), parts=fake_parts)
+        model_path = tmp_path / "model.ldr"
+        model_path.write_text(
+            "0 Local fixture\n1 99 0 0 0 1 0 0 0 1 0 0 0 1 3001.dat\n",
+            encoding="utf-8",
+        )
+        plain_path = tmp_path / "plain.ldr"
+        plain_path.write_text(
+            "0 Local fixture without library metadata\n"
+            "1 4 0 0 0 1 0 0 0 1 0 0 0 1 3001.dat\n",
+            encoding="utf-8",
+        )
+        partial_path = tmp_path / "partial.ldr"
+        partial_path.write_text(
+            "0 Tolerant fixture\n"
+            "this is invalid\n"
+            "1 99 0 0 0 1 0 0 0 1 0 0 0 1 3001.dat\n",
+            encoding="utf-8",
+        )
+
+        # pyldraw3 reads only these local fixture files; it performs no downloads.
+        parts = ldraw.Parts.get(parts_list)
+        loaded = ldraw.load_model(model_path, parts=parts)
+        assert loaded.model is not None
+        assert loaded.complete
+        assert loaded.diagnostics == ()
+        with_parts = await session.ldraw.translate_model(loaded.model, parts=parts)
         assert with_parts.resolved_count == 1
         assert with_parts.rows[0].rebrickable_color_id == 1
-        plain = await session.ldraw.translate_model_path(Path("model.ldr"))
+        plain = await session.ldraw.translate_model_path(plain_path)
         assert plain.resolved_count == 1
         assert plain.diagnostics == ()
         via_library = await session.ldraw.translate_model_path(
-            Path("model.ldr"), library_path=Path("lib/parts.lst")
+            model_path, library_path=parts_list
         )
         assert via_library.rows[0].rebrickable_color_id == 1
         assert (
             await session.ldraw.annotate_pyldraw_bom(
-                [SimpleNamespace(part="3001", colour_code=4, quantity=1)]
+                [ldraw.BomRow("3001", "Brick 2 x 4", 4, "Red", 1)]
             )
         ).resolved_count == 1
         with_colors = await session.ldraw.annotate_pyldraw_bom(
-            [SimpleNamespace(part="3001", colour_code=99, quantity=1)],
-            parts=fake_parts,
+            [ldraw.BomRow("3001", "Brick 2 x 4", 99, "Black", 1)],
+            parts=parts,
         )
         assert with_colors.rows[0].rebrickable_color_id == 1
-        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
-            model=object(), diagnostics=("line 3: bad part",), complete=False
+        partial = await session.ldraw.translate_model_path(
+            partial_path, library_path=parts_list
         )
-        partial = await session.ldraw.translate_model_path(Path("partial.ldr"))
-        assert partial.diagnostics == (
-            "line 3: bad part",
-            "model source is incomplete",
-        )
-        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
-            model=None, diagnostics=("could not read model",), complete=False
-        )
+        assert "Unknown command (this)" in partial.diagnostics[0]
+        assert partial.diagnostics[-1] == "model source is incomplete"
         with pytest.raises(ValueError, match="could not read model"):
-            await session.ldraw.translate_model_path(Path("bad.ldr"))
+            await session.ldraw.translate_model_path(
+                tmp_path / "missing.ldr", library_path=parts_list
+            )
 
 
 @dataclass(frozen=True)
