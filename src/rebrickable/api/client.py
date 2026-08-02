@@ -50,6 +50,7 @@ from rebrickable.api.models import (
     PartListUpdateRequest,
     QuantityRequest,
     SetListRequest,
+    SetListSetUpdateRequest,
     SetListUpdateRequest,
     SetQuantityRequest,
     UserSetsSyncRequest,
@@ -66,6 +67,7 @@ from rebrickable.errors import (
     ApiNotFoundError,
     ApiServerError,
     ApiThrottledError,
+    BatchMutationError,
     PaginationCycleError,
     UserTokenRequiredError,
 )
@@ -367,6 +369,29 @@ class RebrickableClient:
         return decode_model(
             model, payload, operation_id=operation_id, path_template=operation.path
         )
+
+    async def _mutation(
+        self,
+        operation_id: str,
+        *,
+        path: Mapping[str, str | int],
+        json_body: list[dict[str, Any]],
+    ) -> MutationResult:
+        response = await self._send(operation_id, path_values=path, json_body=json_body)
+        operation = OPERATIONS[operation_id]
+        payload = (
+            []
+            if response.status_code == 204 or not response.text
+            else self._json(response, operation_id=operation_id)
+        )
+        items = payload if isinstance(payload, list) else [payload]
+        records = tuple(
+            decode_model(
+                ApiRecord, item, operation_id=operation_id, path_template=operation.path
+            )
+            for item in items
+        )
+        return MutationResult(accepted=records)
 
     async def _page(
         self,
@@ -899,15 +924,23 @@ class RebrickableClient:
             (payload,) if isinstance(payload, PartListPartRequest) else tuple(payload)
         )
         accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_partlists_parts_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token), "list_id": list_id},
-                    form=item.form(),
+        for index, item in enumerate(items):
+            try:
+                accepted.append(
+                    await self._model(
+                        "users_partlists_parts_create",
+                        ApiRecord,
+                        path={
+                            "user_token": self._token(user_token),
+                            "list_id": list_id,
+                        },
+                        form=item.form(),
+                    )
                 )
-            )
+            except ApiError as exc:
+                raise BatchMutationError(
+                    "users_partlists_parts_create", tuple(accepted), index
+                ) from exc
         return MutationResult(accepted=tuple(accepted))
 
     async def get_user_part_list_part(
@@ -1079,15 +1112,23 @@ class RebrickableClient:
             (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
         )
         accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_setlists_sets_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token), "list_id": list_id},
-                    form=item.form(),
+        for index, item in enumerate(items):
+            try:
+                accepted.append(
+                    await self._model(
+                        "users_setlists_sets_create",
+                        ApiRecord,
+                        path={
+                            "user_token": self._token(user_token),
+                            "list_id": list_id,
+                        },
+                        form=item.form(),
+                    )
                 )
-            )
+            except ApiError as exc:
+                raise BatchMutationError(
+                    "users_setlists_sets_create", tuple(accepted), index
+                ) from exc
         return MutationResult(accepted=tuple(accepted))
 
     async def get_user_set_list_set(
@@ -1113,7 +1154,7 @@ class RebrickableClient:
         self,
         list_id: int,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,
@@ -1134,7 +1175,7 @@ class RebrickableClient:
         self,
         list_id: int,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,
@@ -1196,20 +1237,17 @@ class RebrickableClient:
         *,
         user_token: str | None = None,
     ) -> MutationResult:
-        items = (
-            (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
-        )
-        accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_sets_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token)},
-                    form=item.form(),
-                )
+        path = {"user_token": self._token(user_token)}
+        if isinstance(payload, SetQuantityRequest):
+            record = await self._model(
+                "users_sets_create", ApiRecord, path=path, form=payload.form()
             )
-        return MutationResult(accepted=tuple(accepted))
+            return MutationResult(accepted=(record,))
+        return await self._mutation(
+            "users_sets_create",
+            path=path,
+            json_body=[item.form() for item in payload],
+        )
 
     async def sync_user_sets(
         self,
@@ -1220,18 +1258,10 @@ class RebrickableClient:
     ) -> MutationResult:
         if not confirm_replace:
             raise ValueError("sync_user_sets requires confirm_replace=True")
-        form = {
-            "set_num": ",".join(item.set_num or "" for item in payload.sets),
-            "quantity": ",".join(str(item.quantity) for item in payload.sets),
-            "include_spares": ",".join(
-                str(item.include_spares).lower() for item in payload.sets
-            ),
-        }
-        return await self._model(
+        return await self._mutation(
             "users_sets_sync_create",
-            MutationResult,
             path={"user_token": self._token(user_token)},
-            form=form,
+            json_body=[item.form() for item in payload.sets],
         )
 
     async def get_user_set(
@@ -1247,7 +1277,7 @@ class RebrickableClient:
     async def set_user_set_quantity(
         self,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: QuantityRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,

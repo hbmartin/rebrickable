@@ -102,6 +102,21 @@ class ApiDecodeError(ApiError):
         super().__init__(None, path_template, operation_id, detail)
 
 
+class BatchMutationError(RebrickableError):
+    """A sequential batch mutation failed after accepting a prefix of items."""
+
+    def __init__(
+        self, operation_id: str, accepted: tuple[Any, ...], failed_index: int
+    ) -> None:
+        self.operation_id = operation_id
+        self.accepted = accepted
+        self.failed_index = failed_index
+        super().__init__(
+            f"{operation_id} failed at item {failed_index}; "
+            f"{len(accepted)} items were already accepted"
+        )
+
+
 class PaginationCycleError(RebrickableError):
     """An API pager returned a URL already visited."""
 

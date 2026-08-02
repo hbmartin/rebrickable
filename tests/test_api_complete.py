@@ -16,11 +16,13 @@ from rebrickable.api.models import (
     ApiRecord,
     CreateUserTokenRequest,
     LostPartRequest,
+    MutationResult,
     PartListPartRequest,
     PartListRequest,
     PartListUpdateRequest,
     QuantityRequest,
     SetListRequest,
+    SetListSetUpdateRequest,
     SetListUpdateRequest,
     SetQuantityRequest,
     UserSetsSyncRequest,
@@ -33,6 +35,7 @@ from rebrickable.errors import (
     ApiNotFoundError,
     ApiServerError,
     ApiThrottledError,
+    BatchMutationError,
     PaginationCycleError,
     UserTokenRequiredError,
 )
@@ -57,9 +60,14 @@ async def test_every_public_operation_wrapper_and_iterator(monkeypatch) -> None:
         if False:  # pragma: no cover - makes this an async generator
             yield ApiRecord()
 
+    async def fake_mutation(self, operation_id, **kwargs):
+        calls.append((operation_id, kwargs))
+        return MutationResult()
+
     monkeypatch.setattr(RebrickableClient, "_model", fake_model)
     monkeypatch.setattr(RebrickableClient, "_page", fake_page)
     monkeypatch.setattr(RebrickableClient, "_iter", fake_iter)
+    monkeypatch.setattr(RebrickableClient, "_mutation", fake_mutation)
     api = RebrickableClient(
         api_key="key",
         user_token="token",
@@ -134,8 +142,16 @@ async def test_every_public_operation_wrapper_and_iterator(monkeypatch) -> None:
         ("list_user_set_list_sets", (1,), {}),
         ("add_user_set_list_sets", (1, SetQuantityRequest(set_num="1-1")), {}),
         ("get_user_set_list_set", (1, "1-1"), {}),
-        ("replace_user_set_list_set", (1, "1-1", SetQuantityRequest(quantity=2)), {}),
-        ("update_user_set_list_set", (1, "1-1", SetQuantityRequest(quantity=2)), {}),
+        (
+            "replace_user_set_list_set",
+            (1, "1-1", SetListSetUpdateRequest(quantity=2)),
+            {},
+        ),
+        (
+            "update_user_set_list_set",
+            (1, "1-1", SetListSetUpdateRequest(quantity=2)),
+            {},
+        ),
         ("delete_user_set_list_set", (1, "1-1"), {}),
         ("list_user_sets", (), {}),
         ("add_user_sets", (SetQuantityRequest(set_num="1-1"),), {}),
@@ -145,7 +161,7 @@ async def test_every_public_operation_wrapper_and_iterator(monkeypatch) -> None:
             {"confirm_replace": True},
         ),
         ("get_user_set", ("1-1",), {}),
-        ("set_user_set_quantity", ("1-1", SetQuantityRequest(quantity=0)), {}),
+        ("set_user_set_quantity", ("1-1", QuantityRequest(quantity=0)), {}),
         ("delete_user_set", ("1-1",), {}),
     ]
     for name, args, kwargs in reads:
@@ -306,6 +322,99 @@ async def test_redirect_and_non_json_success_are_structured_errors() -> None:
     )
     with pytest.raises(ApiDecodeError, match="not valid JSON"):
         await broken.get_part("3001")
+
+
+@pytest.mark.asyncio
+async def test_sync_user_sets_posts_json_array() -> None:
+    transport = FakeTransport(
+        FakeResponse(
+            [
+                {"set_num": "8043-1", "quantity": 1},
+                {"set_num": "8110-1", "quantity": 3},
+            ]
+        )
+    )
+    api = client(transport)
+    result = await api.sync_user_sets(
+        UserSetsSyncRequest(
+            sets=(
+                SetQuantityRequest(set_num="8043-1"),
+                SetQuantityRequest(set_num="8110-1", quantity=3),
+            )
+        ),
+        confirm_replace=True,
+    )
+    assert len(result.accepted) == 2
+    method, url, captured = transport.requests[-1]
+    assert method == "POST"
+    assert url.endswith("/users/user-secret/sets/sync/")
+    assert captured["json"] == [
+        {"set_num": "8043-1", "quantity": 1, "include_spares": False},
+        {"set_num": "8110-1", "quantity": 3, "include_spares": False},
+    ]
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_user_sets_empty_payload_sends_empty_list() -> None:
+    transport = FakeTransport(FakeResponse([]))
+    api = client(transport)
+    result = await api.sync_user_sets(
+        UserSetsSyncRequest(sets=()), confirm_replace=True
+    )
+    assert result.accepted == ()
+    assert transport.requests[-1][2]["json"] == []
+
+
+def test_sync_request_model_requires_set_num() -> None:
+    with pytest.raises(ValueError, match="set_num"):
+        UserSetsSyncRequest(sets=(SetQuantityRequest(quantity=1),))
+
+
+@pytest.mark.asyncio
+async def test_add_user_sets_sequence_is_single_json_post() -> None:
+    transport = FakeTransport(FakeResponse({"set_num": "1-1"}))
+    api = client(transport)
+    scalar = await api.add_user_sets(SetQuantityRequest(set_num="1-1"))
+    assert len(scalar.accepted) == 1
+    assert transport.requests[-1][2]["data"] == {
+        "set_num": "1-1",
+        "quantity": 1,
+        "include_spares": False,
+    }
+    assert transport.requests[-1][2]["json"] is None
+
+    batching = FakeTransport(FakeResponse([{"set_num": "1-1"}, {"set_num": "2-1"}]))
+    api = client(batching)
+    result = await api.add_user_sets(
+        (SetQuantityRequest(set_num="1-1"), SetQuantityRequest(set_num="2-1"))
+    )
+    assert len(result.accepted) == 2
+    assert len(batching.requests) == 1
+    assert batching.requests[-1][2]["json"] == [
+        {"set_num": "1-1", "quantity": 1, "include_spares": False},
+        {"set_num": "2-1", "quantity": 1, "include_spares": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_mutation_error_carries_partial_progress() -> None:
+    transport = FakeTransport(
+        FakeResponse({"part_num": "3001"}),
+        FakeResponse({"detail": "no"}, status_code=400),
+    )
+    api = client(transport)
+    with pytest.raises(BatchMutationError) as captured:
+        await api.add_user_part_list_parts(
+            1,
+            (
+                PartListPartRequest(part_num="3001", color_id=4, quantity=1),
+                PartListPartRequest(part_num="3002", color_id=4, quantity=1),
+            ),
+        )
+    assert captured.value.failed_index == 1
+    assert len(captured.value.accepted) == 1
+    assert isinstance(captured.value.__cause__, ApiError)
 
 
 @pytest.mark.asyncio
