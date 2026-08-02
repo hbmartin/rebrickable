@@ -35,7 +35,12 @@ from rebrickable.progress import (
     ProgressStage,
     ProgressUnit,
 )
-from rebrickable.types import FileFingerprint, RefreshOutcome, RefreshReport
+from rebrickable.types import (
+    CatalogStatus,
+    FileFingerprint,
+    RefreshOutcome,
+    RefreshReport,
+)
 
 
 def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
@@ -147,6 +152,33 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
         connection.close()
 
 
+def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
+    """Remove superseded snapshots and orphaned partial transfers."""
+    try:
+        children = tuple(paths.snapshots_dir.iterdir())
+    except FileNotFoundError:
+        return
+    named = sorted(
+        (child for child in children if child.is_dir() and child.name != active_id),
+        key=lambda child: child.name,
+        reverse=True,
+    )
+    keep = {active_id}
+    for child in named:
+        if child.name.startswith("."):
+            continue
+        if len(keep) >= retain:
+            break
+        keep.add(child.name)
+    for child in children:
+        if not child.is_dir() or child.name in keep:
+            continue
+        try:
+            shutil.rmtree(child)
+        except OSError:
+            continue
+
+
 def _prune_abandoned_staging(cache_path: Path) -> None:
     """Remove only uniquely named staging directories abandoned over a day ago."""
     threshold = time.time() - 86_400
@@ -180,6 +212,7 @@ async def _refresh_attempt(
     staging = Path(tempfile.mkdtemp(prefix="refresh-", dir=config.cache_path))
     now = datetime.now(UTC)
     snapshot_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    incoming = paths.snapshots_dir / f".incoming-{snapshot_id}"
     file_paths = {item.name: staging / item.filename for item in DATASETS}
     metadata: dict[str, dict[str, Any]] = {}
     changed: dict[str, bool] = {}
@@ -210,7 +243,13 @@ async def _refresh_attempt(
                         f"{filename} returned 304 without an active snapshot"
                     )
                 source = paths.snapshots_dir / prior_state.snapshot_id / filename
-                await asyncio.to_thread(shutil.copy2, source, file_paths[name])
+                try:
+                    await asyncio.to_thread(shutil.copy2, source, file_paths[name])
+                except OSError as exc:
+                    raise DownloadError(
+                        f"unable to reuse cached {filename} from snapshot "
+                        f"{prior_state.snapshot_id}: {exc}"
+                    ) from exc
 
     try:
         config.cache_path.mkdir(parents=True, exist_ok=True)
@@ -223,7 +262,11 @@ async def _refresh_attempt(
                         group.create_task(fetch(definition.name, definition.filename))
             except* DownloadError as errors:
                 raise errors.exceptions[0] from None
-        if changed and not any(changed.values()):
+        if (
+            changed
+            and not any(changed.values())
+            and prior_state.status is CatalogStatus.READY
+        ):
             if prior_state.snapshot_id is None or prior_state.retrieved_at is None:
                 raise CatalogImportError("unchanged refresh has no active snapshot")
             return RefreshReport(
@@ -297,16 +340,21 @@ async def _refresh_attempt(
                 else None
             )
             await asyncio.to_thread(_carry_crosswalk, previous_database, database)
-            await asyncio.to_thread(shutil.move, staging, destination)
+            await asyncio.to_thread(shutil.move, staging, incoming)
+            await asyncio.to_thread(os.replace, incoming, destination)
             _atomic_json(paths.active_pointer, {"snapshot_id": snapshot_id})
+            await asyncio.to_thread(
+                _prune_snapshots, paths, snapshot_id, config.snapshot_retention
+            )
         finally:
             lock.release()
         report = RefreshReport(RefreshOutcome.UPDATED, snapshot_id, now, fingerprints)
         _emit(callback, ProgressEvent(ProgressStage.DONE, message="catalog ready"))
         return report
     finally:
-        if staging.exists():
-            await asyncio.to_thread(shutil.rmtree, staging, True)
+        for leftover in (staging, incoming):
+            if leftover.exists():
+                await asyncio.to_thread(shutil.rmtree, leftover, True)
 
 
 async def refresh_catalog(
@@ -319,6 +367,9 @@ async def refresh_catalog(
     config.cache_path.mkdir(parents=True, exist_ok=True)
     try:
         return await _refresh_attempt(config, force=force, callback=callback)
-    except DatasetIntegrityError:
+    except DatasetIntegrityError as original:
         await asyncio.sleep(2)
-        return await _refresh_attempt(config, force=True, callback=callback)
+        try:
+            return await _refresh_attempt(config, force=True, callback=callback)
+        except DatasetIntegrityError as retry_failure:
+            raise retry_failure from original

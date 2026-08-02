@@ -183,6 +183,7 @@ def test_config_validation_load_write_failures_and_redaction(
         {"request_interval": -1},
         {"max_retries": -1},
         {"refresh_concurrency": 0},
+        {"snapshot_retention": 0},
     ):
         with pytest.raises(ValueError):
             Config(**kwargs)

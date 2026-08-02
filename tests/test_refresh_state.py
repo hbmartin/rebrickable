@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -95,16 +95,18 @@ async def test_integrity_retry_and_failed_promotion_preserve_pointer(
     def fail_import(*args, **kwargs):
         nonlocal attempts
         attempts += 1
-        raise DatasetIntegrityError("mixed generation")
+        raise DatasetIntegrityError(f"mixed generation (attempt {attempts})")
 
     async def no_sleep(_delay: float) -> None:
         return None
 
     monkeypatch.setattr("rebrickable.refresh.import_catalog", fail_import)
     monkeypatch.setattr("rebrickable.refresh.asyncio.sleep", no_sleep)
-    with pytest.raises(DatasetIntegrityError, match="mixed"):
+    with pytest.raises(DatasetIntegrityError, match="attempt 2") as excinfo:
         await refresh_catalog(catalog_config)
     assert attempts == 2
+    assert isinstance(excinfo.value.__cause__, DatasetIntegrityError)
+    assert "attempt 1" in str(excinfo.value.__cause__)
     assert paths.active_pointer.read_text() == original_pointer
 
     monkeypatch.undo()
@@ -120,6 +122,90 @@ async def test_integrity_retry_and_failed_promotion_preserve_pointer(
     with pytest.raises(OSError, match="promotion"):
         await refresh_catalog(catalog_config)
     assert paths.active_pointer.read_text() == original_pointer
+
+
+@pytest.mark.asyncio
+async def test_schema_mismatch_refresh_reimports_despite_304s(
+    catalog_config: Config, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    manifest = paths.snapshots_dir / "fixture-snapshot" / "manifest.json"
+    payload = json.loads(manifest.read_text())
+    payload["schema_version"] = 999
+    manifest.write_text(json.dumps(payload))
+    assert (await catalog_state(catalog_config)).status is CatalogStatus.SCHEMA_MISMATCH
+
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
+    )
+    report = await refresh_catalog(catalog_config)
+    assert report.outcome is RefreshOutcome.UPDATED
+    assert report.snapshot_id != "fixture-snapshot"
+    assert (await catalog_state(catalog_config)).status is CatalogStatus.READY
+    async with await RebrickableSession.open(catalog_config) as session:
+        assert (await session.parts.require("3001")).name == "Brick 2 x 4"
+
+
+@pytest.mark.asyncio
+async def test_missing_copy_forward_source_raises_download_error(
+    catalog_config: Config, monkeypatch
+) -> None:
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
+    )
+    sources["parts"].unlink()
+    with pytest.raises(DownloadError, match="unable to reuse cached"):
+        await refresh_catalog(catalog_config)
+
+
+@pytest.mark.asyncio
+async def test_promotion_prunes_superseded_snapshots_and_orphans(
+    catalog_config: Config, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    (paths.snapshots_dir / ".incoming-stale").mkdir()
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr("rebrickable.refresh._download_one", downloader(sources))
+    report = await refresh_catalog(catalog_config)
+    remaining = {child.name for child in paths.snapshots_dir.iterdir()}
+    assert remaining == {report.snapshot_id}
+    pointer = json.loads(paths.active_pointer.read_text())
+    assert pointer["snapshot_id"] == report.snapshot_id
+    snapshot = paths.snapshots_dir / report.snapshot_id
+    assert len(tuple(snapshot.glob("*.csv.gz"))) == 12
+    assert (snapshot / "manifest.json").is_file()
+    assert (snapshot / catalog_config.database_path.name).is_file()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_retention_keeps_prior_snapshots(
+    catalog_config: Config, monkeypatch
+) -> None:
+    config = replace(catalog_config, snapshot_retention=2)
+    paths = CatalogPaths.from_config(config)
+    sources = snapshot_sources(config)
+    monkeypatch.setattr("rebrickable.refresh._download_one", downloader(sources))
+    report = await refresh_catalog(config)
+    remaining = {child.name for child in paths.snapshots_dir.iterdir()}
+    assert remaining == {"fixture-snapshot", report.snapshot_id}
+
+
+@pytest.mark.asyncio
+async def test_unchanged_refresh_does_not_prune(
+    catalog_config: Config, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    (paths.snapshots_dir / "older-snapshot").mkdir()
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
+    )
+    report = await refresh_catalog(catalog_config)
+    assert report.outcome is RefreshOutcome.UNCHANGED
+    remaining = {child.name for child in paths.snapshots_dir.iterdir()}
+    assert remaining == {"fixture-snapshot", "older-snapshot"}
 
 
 @pytest.mark.asyncio
