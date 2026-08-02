@@ -39,7 +39,8 @@ async def test_repository_search_inventory_and_bom(catalog_config: Config) -> No
     async with await RebrickableSession.open(catalog_config) as session:
         state = await session.state()
         assert state.status is CatalogStatus.READY
-        assert state.files[3].unknown_columns == ("future_column",)
+        parts_file = next(item for item in state.files if item.dataset == "parts")
+        assert parts_file.unknown_columns == ("future_column",)
         part = await session.parts.require("3001")
         assert part.name == "Brick 2 x 4"
         assert part.page_url.endswith("/parts/3001/")
@@ -81,6 +82,9 @@ async def test_mapping_availability_and_validation(catalog_config: Config) -> No
         )
         assert report.exact_count == 0
         assert report.unavailable_count == 0
+        assert report.unique_count == len(report.rows) == 1
+        assert report.rows[0].available
+        assert report.rows[0].confidence == "user_override/user_override"
 
 
 @pytest.mark.asyncio

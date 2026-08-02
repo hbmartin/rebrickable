@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Never
@@ -44,16 +45,23 @@ async def test_resolution_translation_substitutions_and_facades(
     catalog_config: Config,
 ) -> None:
     database = database_for(catalog_config)
-    connection = sqlite3.connect(database)
-    connection.executemany(
-        "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            ("part", "ldraw", "cached-part", "3002", "op", "2026-08-01", "abc"),
-            ("color", "ldraw", "7", "1", "op", "2026-08-01", "abc"),
-        ),
-    )
-    connection.commit()
-    connection.close()
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executemany(
+            "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    "part",
+                    "ldraw",
+                    "cached-part",
+                    "3002",
+                    "op",
+                    "2026-08-01",
+                    "abc",
+                ),
+                ("color", "ldraw", "7", "1", "op", "2026-08-01", "abc"),
+            ),
+        )
+        connection.commit()
 
     async with await RebrickableSession.open(catalog_config) as session:
         assert (await session.parts.list(limit=1))[0].part_num == "3001"
@@ -68,6 +76,8 @@ async def test_resolution_translation_substitutions_and_facades(
 
         overridden = await session.resolve_part(PartRef("ldraw", "3001"))
         assert overridden.source is MappingSource.USER_OVERRIDE
+        prefixed = await session.resolve_part(PartRef("ldraw", "parts\\3001.dat"))
+        assert prefixed.source is MappingSource.USER_OVERRIDE
         cached = await session.resolve_part(PartRef("ldraw", "cached-part"))
         assert cached.target_identifier == "3002"
         canonical = await session.resolve_part(PartRef("rebrickable", "3002"))
@@ -164,13 +174,13 @@ async def test_override_lifecycle_optional_adapter_and_neutral_records(
         type("Colour", (), {"code": 4, "name": "Red", "rgb": "C91A09", "alpha": None})()
     )
     assert color_info.alpha == 255
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a pyldraw3 Colour"):
         LDrawColorInfo.from_pyldraw_colour(object())
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a pyldraw3 BomRow"):
         LDrawBomItem.from_pyldraw_bom(object())
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no color code"):
         LDrawBomItem.from_pyldraw_bom(Row(colour_code=None))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="quantity must be positive"):
         LDrawBomItem("3001", 4, 0)
 
 
@@ -186,14 +196,14 @@ def test_crosswalk_cache_updates_search_and_external_shape(
         operation_id="lego_parts_read",
         response_payload={"part_num": "3001"},
     )
-    connection = sqlite3.connect(database_for(catalog_config))
-    assert (
-        connection.execute(
-            "SELECT external_ids FROM search_documents WHERE kind='part' AND canonical_id='3001'"
-        ).fetchone()[0]
-        == "3001 ld-3001"
-    )
-    connection.close()
+    with closing(sqlite3.connect(database_for(catalog_config))) as connection:
+        assert (
+            connection.execute(
+                "SELECT external_ids FROM search_documents "
+                "WHERE kind='part' AND canonical_id='3001'"
+            ).fetchone()[0]
+            == "3001 ld-3001"
+        )
     assert _external_values({"LDraw": ["a", "a", "b"]}, "ldraw") == ("a", "b")
     assert _external_values({"LDraw": {"ext_ids": [1]}}, "ldraw") == ("1",)
     assert _external_values({"LDraw": "x"}, "ldraw") == ("x",)

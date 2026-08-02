@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Iterable
 from typing import Self
 
@@ -429,10 +430,16 @@ class RebrickableSession:
         direction: str = "both",
         include_mold_variants: bool = True,
         include_prints: bool = False,
+        max_depth: int = 4,
+        max_candidates: int = 100,
     ) -> tuple[SubstitutionEvidence, ...]:
         """Traverse the local relationship graph and retain why each candidate exists."""
         if direction not in {"both", "parents", "children"}:
             raise ValueError("direction must be both, parents, or children")
+        if max_depth < 0:
+            raise ValueError("max_depth must not be negative")
+        if max_candidates < 0:
+            raise ValueError("max_candidates must not be negative")
         match = await self.resolve_part(part)
         if match.target_identifier is None:
             return ()
@@ -440,11 +447,13 @@ class RebrickableSession:
         connection = await self._connection()
         state = self._opened_state
         snapshot = state.snapshot_id if state and state.snapshot_id else "unknown"
-        pending: list[tuple[str, tuple[str, ...]]] = [(root, (root,))]
+        pending: deque[tuple[str, tuple[str, ...], int]] = deque([(root, (root,), 0)])
         seen = {root}
         results: list[SubstitutionEvidence] = []
-        while pending:
-            current, path = pending.pop(0)
+        while pending and len(results) < max_candidates:
+            current, path, depth = pending.popleft()
+            if depth >= max_depth:
+                continue
             clauses: list[str] = []
             values: list[str] = []
             if direction in {"both", "parents"}:
@@ -476,7 +485,7 @@ class RebrickableSession:
                     continue
                 seen.add(candidate)
                 candidate_path = (*path, candidate)
-                pending.append((candidate, candidate_path))
+                pending.append((candidate, candidate_path, depth + 1))
                 results.append(
                     SubstitutionEvidence(
                         PartRef(PartSystem.REBRICKABLE, root),
@@ -494,6 +503,8 @@ class RebrickableSession:
                         Provenance(ProvenanceSource.LOCAL_SNAPSHOT, snapshot),
                     )
                 )
+                if len(results) >= max_candidates:
+                    break
         return tuple(results)
 
     async def translate_bom(self, items: Iterable[LDrawBomItem]) -> TranslationReport:

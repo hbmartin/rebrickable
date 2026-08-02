@@ -186,7 +186,9 @@ async def _run(args: argparse.Namespace) -> int:
                 value = report.incomplete_rows if args.unresolved_only else report
                 sys.stdout.write(to_json(value, schema="rebrickable.ldraw-translation"))
             else:
-                sys.stdout.write(translation_table(report))
+                sys.stdout.write(
+                    translation_table(report, unresolved_only=args.unresolved_only)
+                )
             if not args.json:
                 for note in report.diagnostics:
                     print(f"[ldraw] {note}", file=sys.stderr)

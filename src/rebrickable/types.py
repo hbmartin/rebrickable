@@ -7,16 +7,13 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, TypeAlias
-
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | MappingProxyType
+from typing import Any
 
 
 def normalize_ldraw_code(value: str) -> str:
     """Normalize an LDraw part reference for comparison and storage."""
     normalized = value.replace("\\", "/").casefold().strip()
-    return normalized.removesuffix(".dat")
+    return normalized.rsplit("/", 1)[-1].removesuffix(".dat")
 
 
 class CatalogStatus(StrEnum):

@@ -10,10 +10,14 @@ from typing import Any, ClassVar
 
 import yaml
 
+from rebrickable._atomic import durable_replace
 from rebrickable.dirs import get_cache_dir, get_config_dir, get_data_dir
 from rebrickable.errors import ConfigLoadError
 
-CONFIG_FILE = get_config_dir() / "config.yml"
+
+def default_config_file() -> Path:
+    """Resolve the default config target against the current environment."""
+    return get_config_dir() / "config.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +42,7 @@ class Config:
     request_interval: float = 1.0
     max_retries: int = 3
     max_retry_after: float = 300.0
+    lock_timeout: float = 30.0
     refresh_concurrency: int = 4
     snapshot_retention: int = 1
     mapping_overrides_path: Path | None = None
@@ -52,6 +57,15 @@ class Config:
             raise ValueError("base_url must use HTTPS")
         if not self.downloads_base_url.startswith("https://"):
             raise ValueError("downloads_base_url must use HTTPS")
+        for name in (
+            "connect_timeout",
+            "read_timeout",
+            "write_timeout",
+            "pool_timeout",
+            "lock_timeout",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
         if self.request_interval < 0:
             raise ValueError("request_interval must be non-negative")
         if self.max_retries < 0:
@@ -67,7 +81,7 @@ class Config:
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
-        target = CONFIG_FILE if path is None else Path(path)
+        target = default_config_file() if path is None else Path(path)
         payload: dict[str, Any] = {}
         if target.exists():
             try:
@@ -109,7 +123,7 @@ class Config:
         *,
         include_secrets: bool = False,
     ) -> Path:
-        target = CONFIG_FILE if path is None else Path(path)
+        target = default_config_file() if path is None else Path(path)
         data = asdict(self)
         if not include_secrets:
             data.pop("api_key", None)
@@ -119,6 +133,7 @@ class Config:
         }
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path | None = None
+        replaced = False
         try:
             file_descriptor, temp_name = tempfile.mkstemp(
                 dir=target.parent,
@@ -132,10 +147,12 @@ class Config:
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.chmod(0o600)
-            os.replace(temporary, target)
+            durable_replace(temporary, target)
+            replaced = True
             target.chmod(0o600)
         except OSError as exc:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
             raise ConfigLoadError(f"unable to write {target}: {exc}") from exc
+        finally:
+            if temporary is not None and not replaced:
+                temporary.unlink(missing_ok=True)
         return target

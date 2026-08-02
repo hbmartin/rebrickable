@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rebrickable.catalog.schema import SCHEMA_SQL, SCHEMA_VERSION
-from rebrickable.errors import DatasetIntegrityError, DatasetSchemaError
+from rebrickable.errors import (
+    CatalogImportError,
+    DatasetIntegrityError,
+    DatasetSchemaError,
+)
 
 _RGB = re.compile(r"[0-9A-Fa-f]{6}")
 ProgressReporter = Callable[[str, int], None]
@@ -48,9 +52,9 @@ def _nullable_integer(value: str) -> int | None:
 
 def _boolean(value: str) -> int:
     token = value.casefold()
-    if token == "true":
+    if token in {"t", "true"}:
         return 1
-    if token == "false":
+    if token in {"f", "false"}:
         return 0
     raise ValueError(f"invalid boolean token {value!r}")
 
@@ -209,6 +213,11 @@ def inspect_header(path: Path, definition: DatasetDefinition) -> tuple[str, ...]
         raise DatasetSchemaError(
             f"unable to read {definition.filename}: {exc}"
         ) from exc
+    duplicates = sorted({name for name in header if header.count(name) > 1})
+    if duplicates:
+        raise DatasetSchemaError(
+            f"{definition.filename} has duplicate columns: {', '.join(duplicates)}"
+        )
     missing = set(definition.required) - set(header)
     if missing:
         raise DatasetSchemaError(
@@ -306,6 +315,7 @@ def import_catalog(
     row_counts: dict[str, int] = {}
     unknown_columns: dict[str, tuple[str, ...]] = {}
     connection = sqlite3.connect(database_path)
+    committed = False
     try:
         connection.executescript(SCHEMA_SQL)
         connection.execute("BEGIN")
@@ -330,14 +340,17 @@ def import_catalog(
         connection.executemany(
             "INSERT INTO snapshot_meta VALUES (?, ?)", metadata.items()
         )
-        connection.commit()
         result = connection.execute("PRAGMA integrity_check").fetchone()
         if result is None or result[0] != "ok":
             raise DatasetIntegrityError("SQLite integrity_check failed")
+        connection.commit()
+        committed = True
         connection.execute("PRAGMA optimize")
+        connection.commit()
     except (sqlite3.Error, OSError, EOFError) as exc:
-        connection.rollback()
-        raise DatasetIntegrityError(str(exc)) from exc
+        if not committed:
+            connection.rollback()
+        raise CatalogImportError(str(exc)) from exc
     finally:
         connection.close()
     return row_counts, unknown_columns

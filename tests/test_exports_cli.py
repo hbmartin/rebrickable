@@ -30,7 +30,9 @@ from rebrickable.types import (
 
 
 def test_json_is_versioned_and_deterministic() -> None:
-    payload = json.loads(to_json({"b": 2, "a": 1}, schema="test"))
+    rendered = to_json({"b": 2, "a": 1}, schema="test")
+    assert rendered == to_json({"a": 1, "b": 2}, schema="test")
+    payload = json.loads(rendered)
     assert payload == {"schema": "test", "schema_version": 1, "data": {"a": 1, "b": 2}}
 
 

@@ -1,0 +1,33 @@
+rules:
+  - id: rebrickable-use-durable-replace
+    message: Use rebrickable._atomic.durable_replace for persisted state.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - /src/rebrickable
+      exclude:
+        - /src/rebrickable/_atomic.py
+    pattern: os.replace(...)
+
+  - id: rebrickable-filelock-requires-timeout
+    message: FileLock construction must specify a finite timeout.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - /src/rebrickable
+    patterns:
+      - pattern: FileLock(...)
+      - pattern-not: FileLock(..., timeout=$TIMEOUT, ...)
+
+  - id: rebrickable-no-global-replace-patching
+    message: Patch rebrickable._atomic._replace, not the process-global os.replace.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - /tests
+    pattern-either:
+      - pattern: monkeypatch.setattr(os, "replace", ...)
+      - pattern: monkeypatch.setattr("os.replace", ...)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from rebrickable.types import Provenance, RelationshipType
+from rebrickable.types import RelationshipType
 from rebrickable.urls import minifig_url, part_url, set_url, theme_url
 
 if TYPE_CHECKING:
@@ -137,7 +137,7 @@ class BomRow:
     part: Part
     color: Color
     quantity: int
-    provenance: tuple[BomContribution | Provenance, ...]
+    provenance: tuple[BomContribution, ...]
 
 
 @dataclass(frozen=True, slots=True)

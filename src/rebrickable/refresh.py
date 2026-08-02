@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
+from rebrickable._atomic import durable_replace
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import CatalogPaths, catalog_state
 from rebrickable.catalog.importers import DATASETS, import_catalog, inspect_header
@@ -60,7 +61,7 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        durable_replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -84,7 +85,11 @@ async def _download_one(
     try:
         async with client.stream("GET", url, headers=headers) as response:
             if response.status_code == 304:
-                return False, asdict(previous) if previous is not None else {}
+                if previous is None:
+                    raise DownloadError(
+                        f"{url} returned 304 without a prior fingerprint"
+                    )
+                return False, asdict(previous)
             response.raise_for_status()
             digest = hashlib.sha256()
             length = 0
@@ -150,9 +155,6 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
             """
         )
         connection.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')")
-        result = connection.execute("PRAGMA integrity_check").fetchone()
-        if result is None or result[0] != "ok":
-            raise CatalogImportError("mapping cache integrity check failed")
         connection.commit()
     except sqlite3.Error as exc:
         raise CatalogImportError(f"unable to carry mapping cache: {exc}") from exc
@@ -340,8 +342,13 @@ async def _refresh_attempt(
         _emit(
             callback, ProgressEvent(ProgressStage.PROMOTE, message="promoting snapshot")
         )
-        lock = FileLock(paths.lock_file)
-        await asyncio.to_thread(lock.acquire)
+        lock = FileLock(paths.lock_file, timeout=config.lock_timeout)
+        try:
+            await asyncio.to_thread(lock.acquire)
+        except Timeout as exc:
+            raise CatalogImportError(
+                "another process holds the catalog promotion lock"
+            ) from exc
         try:
             previous_database = (
                 paths.database_for(prior_state.snapshot_id)
@@ -350,7 +357,7 @@ async def _refresh_attempt(
             )
             await asyncio.to_thread(_carry_crosswalk, previous_database, database)
             await asyncio.to_thread(shutil.move, staging, incoming)
-            await asyncio.to_thread(os.replace, incoming, destination)
+            await asyncio.to_thread(durable_replace, incoming, destination)
             _atomic_json(paths.active_pointer, {"snapshot_id": snapshot_id})
             await asyncio.to_thread(
                 _prune_snapshots, paths, snapshot_id, config.snapshot_retention

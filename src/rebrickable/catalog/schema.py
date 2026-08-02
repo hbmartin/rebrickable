@@ -101,6 +101,11 @@ CREATE TABLE user_mapping_overrides (
     reason TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(entity_kind, source_system, source_id, target_system)
 ) WITHOUT ROWID;
+CREATE INDEX api_crosswalk_external_nocase
+ON api_crosswalk_cache(entity_kind, external_system, external_id COLLATE NOCASE);
+CREATE INDEX user_override_source_nocase
+ON user_mapping_overrides(entity_kind, source_system, source_id COLLATE NOCASE, target_system);
+CREATE INDEX parts_num_nocase ON parts(part_num COLLATE NOCASE);
 CREATE TABLE search_documents (
     rowid INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,

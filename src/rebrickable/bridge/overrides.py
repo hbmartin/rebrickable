@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from rebrickable._atomic import durable_replace
 from rebrickable.errors import ConfigLoadError
 from rebrickable.types import normalize_ldraw_code
 
@@ -26,6 +27,7 @@ def read_overrides(path: Path | None) -> tuple[dict[str, str], ...]:
     if not isinstance(payload, dict) or payload.get("version") != 1:
         raise ConfigLoadError("mapping overrides require version: 1")
     records: list[dict[str, str]] = []
+    keys: set[tuple[str, str, str, str]] = set()
     for kind in ("part", "color"):
         entries = payload.get(kind + "s", [])
         if not isinstance(entries, list):
@@ -54,6 +56,12 @@ def read_overrides(path: Path | None) -> tuple[dict[str, str], ...]:
                         "color mapping override identifiers must be integers: "
                         f"{source_id!r} -> {target_id!r}"
                     ) from exc
+            key = (kind, source_system, source_id.casefold(), target_system)
+            if key in keys:
+                raise ConfigLoadError(
+                    f"duplicate mapping override for source_id {source_id!r}"
+                )
+            keys.add(key)
             records.append(
                 {
                     "entity_kind": kind,
@@ -106,7 +114,7 @@ def write_overrides(path: Path, records: tuple[dict[str, str], ...]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         temporary.chmod(0o600)
-        os.replace(temporary, path)
+        durable_replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

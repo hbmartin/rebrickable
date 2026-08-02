@@ -62,6 +62,17 @@ class ApiError(RebrickableError):
     request_id: str | None = None
     retry_after: float | None = None
 
+    def __post_init__(self) -> None:
+        Exception.__init__(
+            self,
+            self.status,
+            self.path_template,
+            self.operation_id,
+            self.detail,
+            self.request_id,
+            self.retry_after,
+        )
+
     def __str__(self) -> str:
         status = "transport" if self.status is None else str(self.status)
         return f"{self.operation_id} failed ({status}): {self.detail}"
@@ -100,6 +111,22 @@ class ApiDecodeError(ApiError):
     ) -> None:
         del payload  # Never retain or repr a potentially sensitive response.
         super().__init__(None, path_template, operation_id, detail)
+
+    def __reduce__(self) -> tuple[object, tuple[str, str, str]]:
+        return (
+            _rebuild_api_decode_error,
+            (self.path_template, self.operation_id, self.detail),
+        )
+
+
+def _rebuild_api_decode_error(
+    path_template: str, operation_id: str, detail: str
+) -> ApiDecodeError:
+    return ApiDecodeError(
+        path_template=path_template,
+        operation_id=operation_id,
+        detail=detail,
+    )
 
 
 class BatchMutationError(RebrickableError):

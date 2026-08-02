@@ -43,7 +43,7 @@ def store_crosswalks(
     ).encode()
     digest = hashlib.sha256(payload).hexdigest()
     retrieved_at = datetime.now(UTC).isoformat()
-    lock = FileLock(paths.lock_file)
+    lock = FileLock(paths.lock_file, timeout=config.lock_timeout)
     with lock:
         connection = sqlite3.connect(database)
         try:
@@ -70,7 +70,10 @@ def store_crosswalks(
             )
             connection.executemany(
                 """
-                INSERT OR REPLACE INTO api_crosswalk_cache
+                INSERT OR REPLACE INTO api_crosswalk_cache (
+                    entity_kind, external_system, external_id, canonical_id,
+                    operation_id, retrieved_at, response_sha256
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -87,13 +90,13 @@ def store_crosswalks(
                 ),
             )
             for item in sorted(affected):
-                _update_search_document(connection, entity_kind, item)
+                update_search_document(connection, entity_kind, item)
             connection.commit()
         finally:
             connection.close()
 
 
-def _update_search_document(
+def update_search_document(
     connection: sqlite3.Connection, entity_kind: str, canonical_id: str
 ) -> None:
     """Refresh one document's external ids and its FTS rows in place."""

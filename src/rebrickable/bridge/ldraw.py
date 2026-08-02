@@ -119,11 +119,19 @@ class LDrawBridge:
         diagnostics: tuple[str, ...] = (),
     ) -> TranslationReport:
         rows: list[TranslatedBomRow] = []
+        part_cache: dict[str, PartMatch] = {}
+        color_cache: dict[int, ColorMatch] = {}
         for item in items:
-            part_match = await self.resolve_ldraw_part(item.part_num)
-            color_match = await self.resolve_ldraw_color(
-                (colors or {}).get(item.color_code, item.color_code)
-            )
+            part_match = part_cache.get(item.part_num)
+            if part_match is None:
+                part_match = await self.resolve_ldraw_part(item.part_num)
+                part_cache[item.part_num] = part_match
+            color_match = color_cache.get(item.color_code)
+            if color_match is None:
+                color_match = await self.resolve_ldraw_color(
+                    (colors or {}).get(item.color_code, item.color_code)
+                )
+                color_cache[item.color_code] = color_match
             status = max(
                 part_match.status,
                 color_match.status,
@@ -228,6 +236,7 @@ class LDrawBridge:
             _persist_override,
             path=override_path,
             lock_path=CatalogPaths.from_config(self._session.config).lock_file,
+            lock_timeout=self._session.config.lock_timeout,
             database=state.database_path if state.database_path.is_file() else None,
             entity_kind=entity_kind,
             source_id=source_id,
@@ -262,11 +271,12 @@ class LDrawBridge:
         state = await self._session.state()
         await asyncio.to_thread(
             _delete_override,
-            override_path,
-            CatalogPaths.from_config(self._session.config).lock_file,
-            state.database_path if state.database_path.is_file() else None,
-            entity_kind,
-            source_id,
+            path=override_path,
+            lock_path=CatalogPaths.from_config(self._session.config).lock_file,
+            lock_timeout=self._session.config.lock_timeout,
+            database=state.database_path if state.database_path.is_file() else None,
+            entity_kind=entity_kind,
+            source_id=source_id,
         )
 
     async def remove_part_override(self, ldraw_code: str) -> None:
@@ -310,18 +320,20 @@ def _persist_override(
     *,
     path: Path,
     lock_path: Path,
+    lock_timeout: float,
     database: Path | None,
     entity_kind: str,
     source_id: str,
     target_id: str,
     reason: str,
 ) -> None:
-    from rebrickable.bridge.cache import _update_search_document
+    from rebrickable.bridge.cache import update_search_document
 
-    with FileLock(lock_path):
+    with FileLock(lock_path, timeout=lock_timeout):
+        existing = read_overrides(path)
         records = [
             item
-            for item in read_overrides(path)
+            for item in existing
             if not (
                 item["entity_kind"] == entity_kind
                 and item["source_system"] == "ldraw"
@@ -329,6 +341,15 @@ def _persist_override(
                 and item["target_system"] == "rebrickable"
             )
         ]
+        affected = {
+            item["target_id"]
+            for item in existing
+            if item["entity_kind"] == entity_kind
+            and item["source_system"] == "ldraw"
+            and item["source_id"].casefold() == source_id.casefold()
+            and item["target_system"] == "rebrickable"
+        }
+        affected.add(target_id)
         records.append(
             {
                 "entity_kind": entity_kind,
@@ -339,30 +360,35 @@ def _persist_override(
                 "reason": reason,
             }
         )
-        write_overrides(path, tuple(records))
         if database is not None:
             connection = sqlite3.connect(database)
             try:
                 connection.execute(
-                    "INSERT OR REPLACE INTO user_mapping_overrides VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO user_mapping_overrides "
+                    "(entity_kind, source_system, source_id, target_system, target_id, reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     (entity_kind, "ldraw", source_id, "rebrickable", target_id, reason),
                 )
-                _update_search_document(connection, entity_kind, target_id)
+                for affected_id in sorted(affected):
+                    update_search_document(connection, entity_kind, affected_id)
                 connection.commit()
             finally:
                 connection.close()
+        write_overrides(path, tuple(records))
 
 
 def _delete_override(
+    *,
     path: Path,
     lock_path: Path,
+    lock_timeout: float,
     database: Path | None,
     entity_kind: str,
     source_id: str,
 ) -> None:
-    from rebrickable.bridge.cache import _update_search_document
+    from rebrickable.bridge.cache import update_search_document
 
-    with FileLock(lock_path):
+    with FileLock(lock_path, timeout=lock_timeout):
         existing = read_overrides(path)
         affected = {
             item["target_id"]
@@ -380,16 +406,17 @@ def _delete_override(
                 and item["source_id"].casefold() == source_id.casefold()
             )
         )
-        write_overrides(path, records)
         if database is not None:
             connection = sqlite3.connect(database)
             try:
                 connection.execute(
-                    "DELETE FROM user_mapping_overrides WHERE entity_kind=? AND source_system='ldraw' AND lower(source_id)=?",
-                    (entity_kind, source_id.casefold()),
+                    "DELETE FROM user_mapping_overrides WHERE entity_kind=? "
+                    "AND source_system='ldraw' AND source_id=? COLLATE NOCASE",
+                    (entity_kind, source_id),
                 )
                 for target_id in affected:
-                    _update_search_document(connection, entity_kind, target_id)
+                    update_search_document(connection, entity_kind, target_id)
                 connection.commit()
             finally:
                 connection.close()
+        write_overrides(path, records)

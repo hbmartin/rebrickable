@@ -3,14 +3,20 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "41 5 * * *"
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+concurrency:
+  group: openapi-drift
+  cancel-in-progress: false
 jobs:
   compare:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
@@ -22,11 +28,21 @@ jobs:
         run: |
           git diff --quiet && exit 0
           branch="automation/openapi-$(date -u +%Y-%m-%d)"
+          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py
+          git diff --cached --binary > /tmp/openapi.patch
+          git reset
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            git fetch origin "$branch:refs/remotes/origin/$branch"
+            git switch -C "$branch" "origin/$branch"
+          else
+            git switch -c "$branch"
+          fi
+          git reset --hard "$GITHUB_SHA"
+          git apply --index /tmp/openapi.patch
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git switch -c "$branch"
-          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py
           git commit -m 'chore: vendor upstream API drift'
+          gh auth setup-git
           git push --force-with-lease origin "$branch"
           gh pr create --base main --head "$branch" --title 'chore: review Rebrickable API drift' --body 'Automated dated Swagger update. Parity CI intentionally remains failing for unreviewed endpoints or signature changes.' || true
         env:

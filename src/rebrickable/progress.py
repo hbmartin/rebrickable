@@ -36,3 +36,8 @@ class ProgressEvent:
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
+"""A fast, non-blocking callback invoked on the caller's event-loop thread.
+
+IMPORT events are marshalled back from the worker thread before invocation.
+Callback exceptions propagate to the refresh caller.
+"""

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-import os
+import pickle
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from rebrickable.bridge.models import (
     TranslationReport,
 )
 from rebrickable.errors import (
+    ApiDecodeError,
     ApiError,
     CatalogUnavailableError,
     ConfigLoadError,
@@ -139,7 +140,12 @@ def test_refresh_translate_and_missing_status_cli(
     assert cli.main(["refresh", "--json"]) == 0
     assert capsys.readouterr().err == ""
 
-    reports = [translation_report(resolved=True), translation_report(resolved=False)]
+    reports = [
+        translation_report(resolved=True),
+        translation_report(resolved=False),
+        translation_report(resolved=True),
+        translation_report(resolved=True),
+    ]
 
     async def fake_translate(
         self, path: Path, *, parts=None, library_path=None, tolerant=True
@@ -164,6 +170,33 @@ def test_refresh_translate_and_missing_status_cli(
         == 4
     )
     assert json.loads(capsys.readouterr().out)["data"][0]["status"] == "unresolved"
+
+    assert (
+        cli.main(
+            [
+                "translate-ldraw",
+                str(tmp_path / "model.ldr"),
+                "--unresolved-only",
+            ]
+        )
+        == 0
+    )
+    table = capsys.readouterr().out
+    assert table.startswith("LDRAW PART")
+    assert "3001" not in table
+
+    assert (
+        cli.main(
+            [
+                "translate-ldraw",
+                str(tmp_path / "model.ldr"),
+                "--csv",
+                "--unresolved-only",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.count("\r\n") == 1
 
     missing = Config(
         database_path=tmp_path / "missing.sqlite", cache_path=tmp_path / "cache"
@@ -242,6 +275,11 @@ def test_config_validation_load_write_failures_and_redaction(
     for kwargs in (
         {"base_url": "http://bad"},
         {"downloads_base_url": "http://bad"},
+        {"connect_timeout": 0},
+        {"read_timeout": -1},
+        {"write_timeout": 0},
+        {"pool_timeout": -1},
+        {"lock_timeout": 0},
         {"request_interval": -1},
         {"max_retries": -1},
         {"refresh_concurrency": 0},
@@ -269,16 +307,46 @@ def test_config_validation_load_write_failures_and_redaction(
     assert "api_key" not in exported
     assert str(tmp_path / "map.yml") in exported
 
-    real_replace = os.replace
-
     def fail_replace(_source: object, _target: object) -> None:
         raise OSError("read only")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr("rebrickable._atomic._replace", fail_replace)
     with pytest.raises(ConfigLoadError, match="unable to write"):
         config.write(tmp_path / "failed.yml")
-    monkeypatch.setattr(os, "replace", real_replace)
     assert not tuple(tmp_path.glob(".failed.yml.*"))
+
+
+def test_config_default_path_is_resolved_lazily(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("rebrickable.config.get_config_dir", lambda: tmp_path)
+    default_path = Config().write()
+    assert default_path == tmp_path / "config.yml"
+
+
+def test_config_write_cleans_temporary_on_serialization_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_dump(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr("rebrickable.config.yaml.safe_dump", fail_dump)
+    target = tmp_path / "secrets.yml"
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        Config(api_key="secret").write(target, include_secrets=True)
+    assert not tuple(tmp_path.glob(".secrets.yml.*"))
+
+
+def test_api_error_pickle_round_trip() -> None:
+    error = ApiError(429, "/parts/", "parts", "slow down", "request", 2.0)
+    restored = pickle.loads(pickle.dumps(error))  # noqa: S301 - trusted test value
+    assert restored == error
+    assert restored.args == error.args
+    decode = ApiDecodeError(
+        path_template="/parts/", operation_id="parts", detail="not JSON"
+    )
+    restored_decode = pickle.loads(pickle.dumps(decode))  # noqa: S301
+    assert restored_decode == decode
 
 
 @pytest.mark.asyncio

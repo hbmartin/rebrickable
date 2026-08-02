@@ -188,6 +188,7 @@ def test_openapi_parity_and_public_methods() -> None:
         "users_sets_delete": "delete_user_set",
     }
     assert set(expected) == set(OPERATIONS)
+    assert len(set(expected.values())) == len(expected)
     assert all(hasattr(RebrickableClient, name) for name in expected.values())
     document = json.loads(
         files("rebrickable.data").joinpath(OPENAPI_RESOURCE).read_text(encoding="utf-8")
