@@ -137,7 +137,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     async with await RebrickableSession.open(Config.load()) as session:
         if args.command == "status":
-            state = await session.state()
+            state = await session.state(verify=True)
             _print_entity(state, json_output=args.json)
             return (
                 ExitCode.OK

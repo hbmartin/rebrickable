@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Self
 
@@ -27,6 +28,7 @@ from rebrickable.catalog.queries import (
 )
 from rebrickable.catalog.search import search as search_catalog
 from rebrickable.config import Config
+from rebrickable.errors import CatalogUnavailableError
 from rebrickable.progress import ProgressCallback
 from rebrickable.refresh import refresh_catalog
 from rebrickable.types import (
@@ -57,6 +59,7 @@ class RebrickableSession:
         self.config = config
         self._db: aiosqlite.Connection | None = None
         self._opened_state: CatalogState | None = None
+        self._open_lock = asyncio.Lock()
         self.parts = PartsRepository(self)
         self.sets = SetsRepository(self)
         self.minifigs = MinifigsRepository(self)
@@ -80,8 +83,17 @@ class RebrickableSession:
 
     async def _connection(self) -> aiosqlite.Connection:
         if self._db is None:
-            self._db, self._opened_state = await open_catalog(self.config)
+            async with self._open_lock:
+                if self._db is None:
+                    self._db, self._opened_state = await open_catalog(self.config)
         return self._db
+
+    async def _pinned_state(self) -> CatalogState:
+        await self._connection()
+        state = self._opened_state
+        if state is None:  # pragma: no cover - _connection always sets it
+            raise CatalogUnavailableError("opened catalog has no state")
+        return state
 
     async def close(self) -> None:
         if self._db is not None:
@@ -89,8 +101,8 @@ class RebrickableSession:
             self._db = None
             self._opened_state = None
 
-    async def state(self) -> CatalogState:
-        return await catalog_state(self.config)
+    async def state(self, *, verify: bool = False) -> CatalogState:
+        return await catalog_state(self.config, verify=verify)
 
     async def refresh(
         self,
@@ -242,7 +254,7 @@ class RebrickableSession:
         """Resolve a namespaced part reference without implicit API access."""
         if part.system is PartSystem.LDRAW:
             return await self.ldraw.resolve_ldraw_part(part.value)
-        state = await self.state()
+        state = await self._pinned_state()
         snapshot = state.snapshot_id or "unknown"
         if part.system is PartSystem.REBRICKABLE:
             entity = await self.parts.get(part.value)
@@ -302,7 +314,7 @@ class RebrickableSession:
         """Resolve a namespaced color reference without implicit API access."""
         if color.system is ColorSystem.LDRAW:
             return await self.ldraw.resolve_ldraw_color(color.value)
-        state = await self.state()
+        state = await self._pinned_state()
         snapshot = state.snapshot_id or "unknown"
         if color.system is ColorSystem.REBRICKABLE:
             entity = await self.colors.get(color.value)

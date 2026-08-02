@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -13,9 +15,11 @@ from rebrickable import (
     SearchKind,
 )
 from rebrickable.bom import BomItem
-from rebrickable.catalog.database import CatalogPaths, catalog_state
+from rebrickable.catalog.database import CatalogPaths, catalog_state, open_catalog
 from rebrickable.config import Config
 from rebrickable.errors import CatalogUnavailableError, EntityNotFoundError
+
+from .conftest import build_catalog_config
 
 
 @pytest.mark.asyncio
@@ -83,3 +87,69 @@ async def test_invalid_pointer_is_unreadable(catalog_config: Config) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     paths.active_pointer.write_text("not-json")
     assert (await catalog_state(catalog_config)).status is CatalogStatus.UNREADABLE
+
+
+@pytest.mark.asyncio
+async def test_open_catalog_handles_hostile_paths(tmp_path: Path) -> None:
+    config = build_catalog_config(tmp_path / "we#ird %dir")
+    state = await catalog_state(config, verify=True)
+    assert state.status is CatalogStatus.READY
+    async with await RebrickableSession.open(config) as session:
+        part = await session.parts.require("3001")
+        assert part.name == "Brick 2 x 4"
+
+
+@pytest.mark.asyncio
+async def test_open_catalog_closes_connection_on_pragma_failure(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[bool] = []
+
+    class FailingConnection:
+        row_factory: object = None
+
+        async def execute(self, _sql: str) -> None:
+            raise sqlite3.OperationalError("query_only rejected")
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    state = await catalog_state(catalog_config, verify=True)
+    assert state.status is CatalogStatus.READY
+
+    async def fake_state(_config: Config, *, verify: bool = False) -> object:
+        del verify
+        return state
+
+    def fake_connect(*_args: object, **_kwargs: object) -> object:
+        async def _open() -> FailingConnection:
+            return FailingConnection()
+
+        return _open()
+
+    monkeypatch.setattr("rebrickable.catalog.database.catalog_state", fake_state)
+    monkeypatch.setattr("rebrickable.catalog.database.aiosqlite.connect", fake_connect)
+    with pytest.raises(sqlite3.OperationalError):
+        await open_catalog(catalog_config)
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_connection_opens_once(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    real_open = open_catalog
+
+    async def counting_open(config: Config) -> object:
+        calls.append(1)
+        await asyncio.sleep(0)
+        return await real_open(config)
+
+    monkeypatch.setattr("rebrickable.session.open_catalog", counting_open)
+    async with await RebrickableSession.open(catalog_config) as session:
+        first, second = await asyncio.gather(
+            session._connection(), session._connection()
+        )
+        assert first is second
+    assert calls == [1]

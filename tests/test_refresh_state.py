@@ -239,7 +239,9 @@ async def test_catalog_state_classifications(catalog_config: Config) -> None:
 
     payload["schema_version"] = 1
     manifest.write_text(json.dumps(payload))
-    assert (await catalog_state(catalog_config)).status is CatalogStatus.UNREADABLE
+    assert (await catalog_state(catalog_config)).status is CatalogStatus.READY
+    verified = await catalog_state(catalog_config, verify=True)
+    assert verified.status is CatalogStatus.UNREADABLE
 
 
 def test_atomic_json_replaces_and_cleans_failure(tmp_path: Path, monkeypatch) -> None:
