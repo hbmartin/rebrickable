@@ -25,7 +25,7 @@ from rebrickable.catalog.models import (
     SetOccurrence,
     Theme,
 )
-from rebrickable.errors import EntityNotFoundError
+from rebrickable.errors import EntityNotFoundError, InventoryNotFoundError
 from rebrickable.types import RelationshipType
 
 T = TypeVar("T")
@@ -88,9 +88,12 @@ class Repository(Generic[T]):
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
-    async def iter(self, *, page_size: int = 500) -> AsyncIterator[T]:
+    def iter(self, *, page_size: int = 500) -> AsyncIterator[T]:
         if not 1 <= page_size <= 1_000:
             raise ValueError("page_size must be between 1 and 1000")
+        return self._iter_pages(page_size)
+
+    async def _iter_pages(self, page_size: int) -> AsyncIterator[T]:
         offset = 0
         while page := await self.list(limit=page_size, offset=offset):
             for entity in page:
@@ -418,12 +421,16 @@ class ThemesRepository(Repository[Theme]):
                     FROM themes t JOIN ancestors a ON t.id=a.parent_id
                     WHERE a.depth < 100
                 )
-                SELECT id, name, parent_id FROM ancestors ORDER BY depth DESC
+                SELECT id, name, parent_id FROM ancestors ORDER BY depth
                 """,
                 (theme_id,),
             )
         ).fetchall()
-        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
+        unique = {row["id"]: row for row in rows}
+        return tuple(
+            Theme(row["id"], row["name"], row["parent_id"])
+            for row in reversed(unique.values())
+        )
 
     async def descendants(self, theme_id: int) -> tuple[Theme, ...]:
         await self.require(theme_id)
@@ -444,7 +451,12 @@ class ThemesRepository(Repository[Theme]):
                 (theme_id,),
             )
         ).fetchall()
-        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
+        unique = {row["id"]: row for row in rows}
+        return tuple(
+            Theme(row["id"], row["name"], row["parent_id"])
+            for row in unique.values()
+            if row["id"] != theme_id
+        )
 
 
 class ColorsRepository(Repository[Color]):
@@ -509,6 +521,8 @@ class InventoriesRepository:
                 (owner_num,),
             )
         ).fetchall()
+        if not rows:
+            raise InventoryNotFoundError("inventory", owner_num)
         return tuple(
             InventoryVersion(
                 int(row["id"]),

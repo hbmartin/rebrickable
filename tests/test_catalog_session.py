@@ -26,6 +26,7 @@ from rebrickable.errors import (
     CatalogUnavailableError,
     CatalogUnreadableError,
     EntityNotFoundError,
+    InventoryNotFoundError,
 )
 
 from .conftest import build_catalog_config
@@ -143,7 +144,9 @@ async def test_catalog_analytics_and_inventory_history(catalog_config: Config) -
         assert unchanged[:] == ()
 
         with pytest.raises(ValueError, match="page_size"):
-            await anext(session.parts.iter(page_size=0))
+            session.parts.iter(page_size=0)
+        with pytest.raises(InventoryNotFoundError):
+            await session.inventories.versions("missing-1")
         with pytest.raises(ValueError, match="direction"):
             await session.parts.relationships("3001", direction="sideways")
         with pytest.raises(ValueError, match="max_depth"):
@@ -199,6 +202,40 @@ async def test_theme_tree_mold_cycle_and_filtered_occurrences(
         assert [(item.set.set_num, item.is_spare) for item in spares] == [
             ("100-1", True)
         ]
+
+
+@pytest.mark.asyncio
+async def test_theme_parent_cycle_traversal_terminates(
+    catalog_config: Config,
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    connection = sqlite3.connect(paths.database_for("fixture-snapshot"))
+    try:
+        connection.executemany(
+            "INSERT INTO themes(id, name, parent_id) VALUES (?, ?, ?)",
+            ((2, "Child", 1), (3, "Grandchild", 2)),
+        )
+        connection.execute("UPDATE themes SET parent_id=3 WHERE id=1")
+        connection.execute("UPDATE sets SET theme_id=2 WHERE set_num='200-1'")
+        connection.execute(
+            "UPDATE search_documents SET theme_id=2 "
+            "WHERE kind='set' AND canonical_id='200-1'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    async with await RebrickableSession.open(catalog_config) as session:
+        assert [item.id for item in await session.themes.lineage(3)] == [1, 2, 3]
+        assert [item.id for item in await session.themes.descendants(1)] == [2, 3]
+        result = await session.search(
+            "",
+            kinds={SearchKind.SET},
+            filters=SearchFilters(theme_id=1, include_subthemes=True),
+        )
+        assert {hit.canonical_id for hit in result.hits} == {"100-1", "200-1"}
+        with pytest.raises(ValueError, match="include_subthemes"):
+            await session.search("brick", filters=SearchFilters(include_subthemes=True))
 
 
 @pytest.mark.asyncio
