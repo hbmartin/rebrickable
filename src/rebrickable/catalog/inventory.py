@@ -42,15 +42,27 @@ def _color(row: aiosqlite.Row) -> Color:
     )
 
 
-async def load_inventory(connection: aiosqlite.Connection, owner_num: str) -> Inventory:
+async def load_inventory(
+    connection: aiosqlite.Connection,
+    owner_num: str,
+    *,
+    version: int | None = None,
+) -> Inventory:
+    source = "latest_inventories" if version is None else "inventories"
+    version_clause = "" if version is None else " AND version=?"
+    values: tuple[str | int, ...] = (
+        (owner_num,) if version is None else (owner_num, version)
+    )
     row = await (
         await connection.execute(
-            "SELECT id, version FROM latest_inventories WHERE owner_num=? ORDER BY id DESC LIMIT 1",
-            (owner_num,),
+            f"SELECT id, version FROM {source} WHERE owner_num=?{version_clause} "
+            "ORDER BY id DESC LIMIT 1",
+            values,
         )
     ).fetchone()
     if row is None:
-        raise InventoryNotFoundError("inventory", owner_num)
+        identifier = owner_num if version is None else f"{owner_num} version {version}"
+        raise InventoryNotFoundError("inventory", identifier)
     inventory_id, version = int(row["id"]), int(row["version"])
     part_rows = await (
         await connection.execute(

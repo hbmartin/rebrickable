@@ -34,6 +34,8 @@ async def search(
         raise ValueError("empty search requires a kind or filter")
     conditions: list[str] = []
     values: list[object] = []
+    ctes: list[str] = []
+    cte_values: list[object] = []
     if kinds:
         placeholders = ",".join("?" for _ in kinds)
         conditions.append(f"kind IN ({placeholders})")
@@ -41,7 +43,6 @@ async def search(
     filter_map = {
         "year >= ?": active_filters.year_from,
         "year <= ?": active_filters.year_to,
-        "theme_id = ?": active_filters.theme_id,
         "num_parts >= ?": active_filters.min_parts,
         "num_parts <= ?": active_filters.max_parts,
         "category_id = ?": active_filters.category_id,
@@ -51,12 +52,23 @@ async def search(
         if value is not None:
             conditions.append(clause)
             values.append(value)
+    if active_filters.theme_id is not None:
+        if active_filters.include_subthemes:
+            ctes.append(
+                "theme_tree(id, depth) AS ("
+                "SELECT id, 0 FROM themes WHERE id=? UNION ALL "
+                "SELECT t.id, tt.depth + 1 FROM themes t "
+                "JOIN theme_tree tt ON t.parent_id=tt.id WHERE tt.depth < 100)"
+            )
+            cte_values.append(active_filters.theme_id)
+            conditions.append("theme_id IN (SELECT id FROM theme_tree)")
+        else:
+            conditions.append("theme_id = ?")
+            values.append(active_filters.theme_id)
     fts = _fts_query(normalized)
-    cte_sql = ""
-    cte_values: list[object] = []
     if normalized:
-        cte_sql = (
-            "WITH fts_hits(rowid) AS MATERIALIZED "
+        ctes.append(
+            "fts_hits(rowid) AS MATERIALIZED "
             "(SELECT rowid FROM search_fts WHERE search_fts MATCH ?)"
         )
         cte_values.append(fts or '""')
@@ -80,6 +92,7 @@ async def search(
                 f"%{escaped}%",
             ),
         )
+    cte_sql = ("WITH RECURSIVE " + ", ".join(ctes)) if ctes else ""
     where = " AND ".join(conditions) if conditions else "1"
     if normalized:
         rank_sql = """

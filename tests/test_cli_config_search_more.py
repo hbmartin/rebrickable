@@ -4,11 +4,14 @@ from __future__ import annotations
 import json
 import pickle
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
 
 import pytest
+import yaml
 
 from rebrickable import Config, MappingSource, MappingStatus, RebrickableSession, cli
+from rebrickable.api.models import ApiMinifig, ApiPage, ApiPart, ApiSet
 from rebrickable.bridge.cache import store_crosswalks
 from rebrickable.bridge.models import (
     ColorMatch,
@@ -115,6 +118,176 @@ def test_catalog_cli_commands_and_machine_streams(
     output = tmp_path / "api.json"
     assert cli.main(["api-spec", "--output", str(output)]) == 0
     assert json.loads(output.read_text())["swagger"] == "2.0"
+
+
+def test_expanded_catalog_part_search_and_bom_cli(
+    catalog_config: Config, monkeypatch, capsys, tmp_path: Path
+) -> None:
+    use_config(monkeypatch, catalog_config)
+
+    assert cli.main(["--format", "json", "catalog", "versions", "100-1"]) == 0
+    versions = json.loads(capsys.readouterr().out)["data"]
+    assert [(item["version"], item["is_latest"]) for item in versions] == [
+        (1, False),
+        (2, True),
+    ]
+    assert cli.main(["catalog", "diff", "100-1", "1", "2"]) == 0
+    assert "InventoryDiff" in capsys.readouterr().out
+    assert cli.main(["catalog", "path"]) == 0
+    assert "catalog.sqlite" in capsys.readouterr().out
+    assert cli.main(["--format", "json", "catalog", "doctor"]) == 0
+    doctor = json.loads(capsys.readouterr().out)["data"]
+    assert doctor["catalog_status"] == "ready"
+    assert doctor["pyrebrickable_conflict"] is None
+
+    assert cli.main(["part", "3001", "--usage", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["set_count"] == 2
+    assert cli.main(["part", "3001", "--sets"]) == 0
+    assert "SetOccurrence" in capsys.readouterr().out
+    assert (
+        cli.main(
+            [
+                "search",
+                "",
+                "--kind",
+                "set",
+                "--theme-id",
+                "1",
+                "--include-subthemes",
+                "--year-from",
+                "2020",
+                "--offset",
+                "0",
+            ]
+        )
+        == 0
+    )
+    assert "100-1" in capsys.readouterr().out
+
+    bom = tmp_path / "bom.csv"
+    bom.write_text("Part,Color,Quantity\n3001,4,2\n", encoding="utf-8")
+    assert cli.main(["--format", "json", "bom", "validate", str(bom)]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["unavailable_count"] == 0
+    assert cli.main(["bom", "normalize", str(bom)]) == 0
+    assert "Bom(" in capsys.readouterr().out
+
+
+def test_read_only_api_cli(catalog_config: Config, monkeypatch, capsys) -> None:
+    config = Config(
+        database_path=catalog_config.database_path,
+        cache_path=catalog_config.cache_path,
+        mapping_overrides_path=catalog_config.mapping_overrides_path,
+        api_key="secret",
+    )
+    use_config(monkeypatch, config)
+
+    class FakeClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def get_part(self, part_num: str) -> ApiPart:
+            return ApiPart(part_num=part_num, name="Brick")
+
+        async def get_set(self, set_num: str) -> ApiSet:
+            return ApiSet(set_num=set_num, name="Set")
+
+        async def get_minifig(self, fig_num: str) -> ApiMinifig:
+            return ApiMinifig(set_num=fig_num, name="Fig")
+
+        async def list_parts(self, **_query: object) -> ApiPage[ApiPart]:
+            return ApiPage(count=0, results=())
+
+        async def list_sets(self, **_query: object) -> ApiPage[ApiSet]:
+            return ApiPage(count=0, results=())
+
+        async def list_minifigs(self, **_query: object) -> ApiPage[ApiMinifig]:
+            return ApiPage(count=0, results=())
+
+    monkeypatch.setattr(cli, "RebrickableClient", FakeClient)
+    assert cli.main(["--format", "json", "api", "part", "3001"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["part_num"] == "3001"
+    for arguments in (
+        ["api", "set", "1-1"],
+        ["api", "minifig", "fig-1"],
+        ["api", "parts", "--search", "brick"],
+        ["api", "sets"],
+        ["api", "minifigs"],
+    ):
+        assert cli.main(arguments) == 0
+        assert capsys.readouterr().out
+
+    use_config(
+        monkeypatch,
+        Config(
+            database_path=catalog_config.database_path,
+            cache_path=catalog_config.cache_path,
+        ),
+    )
+    assert cli.main(["api", "part", "3001"]) == 2
+    assert "require REBRICKABLE_API_KEY" in capsys.readouterr().err
+
+
+def test_yaml_bom_formats_and_conflict_doctor(
+    catalog_config: Config, monkeypatch, capsys, tmp_path: Path
+) -> None:
+    use_config(monkeypatch, catalog_config)
+    assert cli.main(["--format", "yaml", "part", "3001"]) == 0
+    assert yaml.safe_load(capsys.readouterr().out)["part_num"] == "3001"
+    assert cli.main(["--format", "csv", "part", "3001"]) == 0
+    assert capsys.readouterr().out.startswith("category_id,material,name,part_num")
+
+    rebrickable_csv = tmp_path / "rebrickable.csv"
+    rebrickable_csv.write_text(
+        "part_num,color_id,quantity\n3001,4,1\n", encoding="utf-8"
+    )
+    assert (
+        cli.main(
+            [
+                "bom",
+                "normalize",
+                str(rebrickable_csv),
+                "--input-format",
+                "rebrickable-csv",
+            ]
+        )
+        == 0
+    )
+    assert "rebrickable" in capsys.readouterr().out
+
+    bricklink_xml = tmp_path / "wanted.xml"
+    bricklink_xml.write_text(
+        "<INVENTORY><ITEM><ITEMID>3001</ITEMID><COLOR>4</COLOR>"
+        "<MINQTY>1</MINQTY></ITEM></INVENTORY>",
+        encoding="utf-8",
+    )
+    assert (
+        cli.main(
+            [
+                "bom",
+                "normalize",
+                str(bricklink_xml),
+                "--input-format",
+                "bricklink-xml",
+            ]
+        )
+        == 0
+    )
+    assert "bricklink" in capsys.readouterr().out
+
+    real_version = metadata.version
+
+    def conflicting_version(name: str) -> str:
+        return "0.1" if name == "pyrebrickable" else real_version(name)
+
+    monkeypatch.setattr(cli.metadata, "version", conflicting_version)
+    assert cli.main(["catalog", "doctor"]) == 2
+    assert "pyrebrickable" in capsys.readouterr().out
 
 
 def test_refresh_translate_and_missing_status_cli(

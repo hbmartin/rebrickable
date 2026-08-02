@@ -22,6 +22,7 @@ from rebrickable.catalog.queries import (
     CategoriesRepository,
     ColorsRepository,
     ElementsRepository,
+    InventoriesRepository,
     MinifigsRepository,
     PartsRepository,
     SetsRepository,
@@ -68,13 +69,26 @@ class RebrickableSession:
         self.themes = ThemesRepository(self)
         self.categories = CategoriesRepository(self)
         self.elements = ElementsRepository(self)
+        self.inventories = InventoriesRepository(self)
         from rebrickable.bridge.ldraw import LDrawBridge
 
         self.ldraw = LDrawBridge(self)
 
     @classmethod
     async def open(cls, config: Config | None = None) -> RebrickableSession:
+        """Create a lazy session; catalog access opens and pins the snapshot."""
         return cls(Config.load() if config is None else config)
+
+    @classmethod
+    async def connect(cls, config: Config | None = None) -> RebrickableSession:
+        """Create a session and eagerly verify/open its pinned catalog snapshot."""
+        session = cls(Config.load() if config is None else config)
+        try:
+            await session._connection()
+        except BaseException:
+            await session.close()
+            raise
+        return session
 
     async def __aenter__(self) -> Self:
         return self
@@ -103,7 +117,16 @@ class RebrickableSession:
             self._opened_state = None
 
     async def state(self, *, verify: bool = False) -> CatalogState:
+        """Return the currently active catalog state, which may differ when pinned."""
         return await catalog_state(self.config, verify=verify)
+
+    async def current_catalog_state(self, *, verify: bool = False) -> CatalogState:
+        """Explicit spelling for the current active catalog pointer."""
+        return await self.state(verify=verify)
+
+    async def opened_catalog_state(self) -> CatalogState:
+        """Return the immutable catalog state pinned by this open session."""
+        return await self._pinned_state()
 
     async def refresh(
         self,
@@ -152,6 +175,12 @@ class RebrickableSession:
         part: PartRef,
         color: ColorRef,
     ) -> PartColorAvailability:
+        resolved = await self._resolve_part_color(part, color)
+        return (await self._check_resolved_part_colors((resolved,)))[0]
+
+    async def _resolve_part_color(
+        self, part: PartRef, color: ColorRef
+    ) -> tuple[str | None, int | None, str]:
         if part.system is PartSystem.REBRICKABLE:
             part_num = part.value
             part_confidence = "exact"
@@ -172,62 +201,105 @@ class RebrickableSession:
         else:
             color_id = None
             color_confidence = "none"
-        if part_num is None or color_id is None:
-            return PartColorAvailability(False, part_num, color_id, confidence="none")
+        return part_num, color_id, f"{part_confidence}/{color_confidence}"
+
+    async def _check_resolved_part_colors(
+        self,
+        resolved: tuple[tuple[str | None, int | None, str], ...],
+    ) -> tuple[PartColorAvailability, ...]:
+        if not resolved:
+            return ()
         connection = await self._connection()
-        elements = await (
-            await connection.execute(
-                "SELECT element_id FROM elements WHERE part_num=? AND color_id=? ORDER BY element_id",
-                (part_num, color_id),
+        element_ids: dict[int, list[str]] = {}
+        evidence_by_index: dict[int, aiosqlite.Row] = {}
+        relationship_only: set[int] = set()
+        for start in range(0, len(resolved), 300):
+            chunk = resolved[start : start + 300]
+            valid = [
+                (start + index, part_num, color_id)
+                for index, (part_num, color_id, _confidence) in enumerate(chunk)
+                if part_num is not None and color_id is not None
+            ]
+            if not valid:
+                continue
+            placeholders = ",".join("(?,?,?)" for _ in valid)
+            parameters = [value for item in valid for value in item]
+            requested = (
+                f"WITH requested(idx, part_num, color_id) AS (VALUES {placeholders})"
             )
-        ).fetchall()
-        evidence = await (
-            await connection.execute(
-                """
-                SELECT COUNT(DISTINCT s.set_num) AS set_count,
-                       COUNT(DISTINCT li.id) AS inventory_count,
-                       MIN(s.year) AS first_year, MAX(s.year) AS last_year,
-                       MAX(ip.is_spare) AS any_spare,
-                       MIN(ip.is_spare) AS all_spare
-                FROM inventory_parts ip
-                JOIN latest_inventories li ON li.id=ip.inventory_id
-                LEFT JOIN sets s ON s.set_num=li.owner_num
-                WHERE ip.part_num=? AND ip.color_id=?
-                """,
-                (part_num, color_id),
-            )
-        ).fetchone()
-        if evidence is None:
-            raise RuntimeError("availability aggregate unexpectedly returned no row")
-        set_count = int(evidence["set_count"] or 0)
-        inventory_count = int(evidence["inventory_count"] or 0)
-        available = bool(elements) or inventory_count > 0
-        relationship_only = False
-        if not available:
-            relationship = await (
+            element_rows = await (
                 await connection.execute(
-                    """
-                    WITH candidates(part_num) AS (
-                        SELECT CASE WHEN child_part_num=? THEN parent_part_num
-                                    ELSE child_part_num END
-                        FROM part_relationships
-                        WHERE child_part_num=? OR parent_part_num=?
-                    )
-                    SELECT 1 FROM candidates c
-                    WHERE EXISTS (
-                        SELECT 1 FROM elements e
-                        WHERE e.part_num=c.part_num AND e.color_id=?
-                    ) OR EXISTS (
-                        SELECT 1 FROM inventory_parts ip
-                        JOIN latest_inventories li ON li.id=ip.inventory_id
-                        WHERE ip.part_num=c.part_num AND ip.color_id=?
-                    )
-                    LIMIT 1
-                    """,
-                    (part_num, part_num, part_num, color_id, color_id),
+                    requested + " SELECT r.idx, e.element_id FROM requested r "
+                    "JOIN elements e ON e.part_num=r.part_num AND e.color_id=r.color_id "
+                    "ORDER BY r.idx, e.element_id",
+                    parameters,
                 )
-            ).fetchone()
-            relationship_only = relationship is not None
+            ).fetchall()
+            for row in element_rows:
+                element_ids.setdefault(int(row["idx"]), []).append(
+                    str(row["element_id"])
+                )
+            evidence_rows = await (
+                await connection.execute(
+                    requested
+                    + """
+                    SELECT r.idx, COUNT(DISTINCT s.set_num) AS set_count,
+                           COUNT(DISTINCT li.id) AS inventory_count,
+                           MIN(s.year) AS first_year, MAX(s.year) AS last_year,
+                           MAX(CASE WHEN li.id IS NOT NULL THEN ip.is_spare END)
+                               AS any_spare,
+                           MIN(CASE WHEN li.id IS NOT NULL THEN ip.is_spare END)
+                               AS all_spare
+                    FROM requested r
+                    LEFT JOIN inventory_parts ip
+                      ON ip.part_num=r.part_num AND ip.color_id=r.color_id
+                    LEFT JOIN latest_inventories li ON li.id=ip.inventory_id
+                    LEFT JOIN sets s ON s.set_num=li.owner_num
+                    GROUP BY r.idx ORDER BY r.idx
+                    """,
+                    parameters,
+                )
+            ).fetchall()
+            evidence_by_index.update((int(row["idx"]), row) for row in evidence_rows)
+            unavailable = [
+                item
+                for item in valid
+                if not element_ids.get(item[0])
+                and not int(evidence_by_index[item[0]]["inventory_count"] or 0)
+            ]
+            if unavailable:
+                unavailable_placeholders = ",".join("(?,?,?)" for _ in unavailable)
+                unavailable_parameters = [
+                    value for item in unavailable for value in item
+                ]
+                relationship_rows = await (
+                    await connection.execute(
+                        "WITH requested(idx, part_num, color_id) AS (VALUES "
+                        + unavailable_placeholders
+                        + ") "
+                        + """
+                        SELECT DISTINCT r.idx
+                        FROM requested r
+                        JOIN part_relationships pr
+                          ON pr.child_part_num=r.part_num OR pr.parent_part_num=r.part_num
+                        LEFT JOIN elements e
+                          ON e.part_num=CASE WHEN pr.child_part_num=r.part_num
+                                             THEN pr.parent_part_num
+                                             ELSE pr.child_part_num END
+                         AND e.color_id=r.color_id
+                        LEFT JOIN inventory_parts ip
+                          ON ip.part_num=CASE WHEN pr.child_part_num=r.part_num
+                                              THEN pr.parent_part_num
+                                              ELSE pr.child_part_num END
+                         AND ip.color_id=r.color_id
+                        LEFT JOIN latest_inventories li ON li.id=ip.inventory_id
+                        WHERE e.element_id IS NOT NULL OR li.id IS NOT NULL
+                        """,
+                        unavailable_parameters,
+                    )
+                ).fetchall()
+                relationship_only.update(int(row["idx"]) for row in relationship_rows)
+
         state = self._opened_state
         provenance = (
             Provenance(
@@ -235,21 +307,36 @@ class RebrickableSession:
                 state.snapshot_id if state and state.snapshot_id else "unknown",
             ),
         )
-        return PartColorAvailability(
-            available=available,
-            rebrickable_part=part_num,
-            rebrickable_color=color_id,
-            element_ids=tuple(str(row[0]) for row in elements),
-            set_count=set_count,
-            inventory_count=inventory_count,
-            first_year=evidence["first_year"],
-            last_year=evidence["last_year"],
-            appears_as_spare=bool(evidence["any_spare"]),
-            spare_only=bool(evidence["all_spare"]) if inventory_count else False,
-            relationship_only=relationship_only,
-            confidence=f"{part_confidence}/{color_confidence}",
-            provenance=provenance,
-        )
+        results: list[PartColorAvailability] = []
+        for index, (part_num, color_id, confidence) in enumerate(resolved):
+            if part_num is None or color_id is None:
+                results.append(
+                    PartColorAvailability(False, part_num, color_id, confidence="none")
+                )
+                continue
+            evidence = evidence_by_index[index]
+            elements = tuple(element_ids.get(index, ()))
+            inventory_count = int(evidence["inventory_count"] or 0)
+            results.append(
+                PartColorAvailability(
+                    available=bool(elements) or inventory_count > 0,
+                    rebrickable_part=part_num,
+                    rebrickable_color=color_id,
+                    element_ids=elements,
+                    set_count=int(evidence["set_count"] or 0),
+                    inventory_count=inventory_count,
+                    first_year=evidence["first_year"],
+                    last_year=evidence["last_year"],
+                    appears_as_spare=bool(evidence["any_spare"]),
+                    spare_only=(
+                        bool(evidence["all_spare"]) if inventory_count else False
+                    ),
+                    relationship_only=index in relationship_only,
+                    confidence=confidence,
+                    provenance=provenance,
+                )
+            )
+        return tuple(results)
 
     async def resolve_part(self, part: PartRef) -> PartMatch:
         """Resolve a namespaced part reference without implicit API access."""
@@ -516,9 +603,12 @@ class RebrickableSession:
         return await self.ldraw.translate_bom(items)
 
     async def validate_bom(self, bom: Bom) -> BomValidationReport:
-        rows: list[BomValidationRow] = []
+        resolved: list[tuple[str | None, int | None, str]] = []
         for item in bom.items:
-            result = await self.check_part_color(item.part, item.color)
+            resolved.append(await self._resolve_part_color(item.part, item.color))
+        availability = await self._check_resolved_part_colors(tuple(resolved))
+        rows: list[BomValidationRow] = []
+        for item, result in zip(bom.items, availability, strict=True):
             notes = ["spare only"] if result.spare_only else []
             substitutions: tuple[SubstitutionEvidence, ...] = ()
             if (

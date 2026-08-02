@@ -79,7 +79,7 @@ class LDrawBridge:
         """Explicitly cache LDraw IDs reported by the API for one part."""
         from rebrickable.bridge.cache import store_crosswalks
 
-        dto = await client.get_part(part_num, inc_part_details=1)
+        dto = await client.get_part(part_num, inc_part_details=True)
         values = _external_values(dto.external_ids, "ldraw")
         await asyncio.to_thread(
             store_crosswalks,

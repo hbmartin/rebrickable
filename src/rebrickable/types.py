@@ -183,6 +183,7 @@ class SearchFilters:
     max_parts: int | None = None
     category_id: int | None = None
     material: str | None = None
+    include_subthemes: bool = False
 
 
 @dataclass(frozen=True, slots=True)

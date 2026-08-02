@@ -1,6 +1,12 @@
 name: Scheduled integration
 on:
   workflow_dispatch:
+    inputs:
+      run_mutations:
+        description: "Run disposable-account mutation round trip"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 4 * * 1"
 permissions:
@@ -37,3 +43,22 @@ jobs:
           name: integration-artifacts
           path: "*-report.json"
           retention-days: 30
+
+  guarded-mutation:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_mutations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - run: uv sync --all-groups --locked
+      - name: Disposable-user mutation with cleanup
+        env:
+          REBRICKABLE_API_KEY: ${{ secrets.REBRICKABLE_API_KEY }}
+          REBRICKABLE_DISPOSABLE_USER_TOKEN: ${{ secrets.REBRICKABLE_DISPOSABLE_USER_TOKEN }}
+          REBRICKABLE_RUN_MUTATIONS: I_UNDERSTAND
+        run: uv run python -m pytest tests/integration/test_mutation_guarded.py -m mutation

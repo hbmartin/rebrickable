@@ -11,6 +11,7 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Home" = "index.md" },
   { "Quickstart" = "quickstart.md" },
+  { "Migrating to 1.1" = "migration-1.1.md" },
   { "Data model" = "data-model.md" },
   { "API v3" = "api.md" },
   { "CLI" = "cli.md" },

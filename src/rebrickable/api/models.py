@@ -69,6 +69,10 @@ class ApiPart(ApiModel):
     part_cat_id: int | None = None
     part_url: HttpUrl | None = None
     part_img_url: HttpUrl | None = None
+    year_from: int | None = None
+    year_to: int | None = None
+    part_material: str | None = None
+    print_of: str | None = None
     external_ids: Mapping[str, Any] = Field(default_factory=dict)
 
 
@@ -99,6 +103,8 @@ class ApiElement(ApiModel):
     part: ApiPart | None = None
     color: ApiColor | None = None
     design_id: str | None = None
+    element_img_url: HttpUrl | None = None
+    part_img_url: HttpUrl | None = None
 
 
 class ApiPartColor(ApiModel):
@@ -117,6 +123,9 @@ class ApiInventoryPart(ApiModel):
     color: ApiColor
     quantity: int
     is_spare: bool = False
+    element_id: str | None = None
+    design_id: str | None = None
+    part_img_url: HttpUrl | None = None
 
 
 class ApiInventorySet(ApiModel):
@@ -133,6 +142,12 @@ class ApiAlternateBuild(ApiModel):
     set_num: str | None = None
     name: str
     designer_name: str | None = None
+    designer_url: HttpUrl | None = None
+    moc_url: HttpUrl | None = None
+    moc_img_url: HttpUrl | None = None
+    num_parts: int | None = None
+    theme_id: int | None = None
+    year: int | None = None
 
 
 class ApiUserToken(ApiModel):
@@ -153,6 +168,8 @@ class ApiProfile(ApiModel):
 class ApiBuildResult(ApiModel):
     can_build: bool | None = None
     num_missing: int | None = None
+    total_parts: int | None = None
+    missing_parts: tuple[ApiInventoryPart, ...] = ()
 
 
 class ApiLostPart(ApiModel):
@@ -206,8 +223,26 @@ class ApiSetListSet(ApiModel):
 
 
 class MutationResult(ApiModel):
+    requested: tuple[ApiRecord, ...] = ()
     accepted: tuple[ApiRecord, ...] = ()
+    unaccepted: tuple[ApiRecord, ...] = ()
     skipped: tuple[ApiRecord, ...] = ()
+
+    @property
+    def requested_count(self) -> int:
+        return len(self.requested)
+
+    @property
+    def accepted_count(self) -> int:
+        return len(self.accepted)
+
+    @property
+    def unaccepted_count(self) -> int:
+        return len(self.unaccepted)
+
+    @property
+    def skipped_count(self) -> int:
+        return len(self.skipped)
 
 
 class RequestModel(BaseModel):

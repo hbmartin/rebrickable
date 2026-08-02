@@ -31,7 +31,7 @@ if report.unresolved_count or report.ambiguous_count:
 
 ```python
 async with RebrickableClient(api_key=api_key) as client:
-    async for item in client.iter_parts(search="slope", inc_part_details=1):
+    async for item in client.iter_parts(search="slope", inc_part_details=True):
         process(item)
 ```
 

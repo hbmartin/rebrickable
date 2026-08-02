@@ -54,8 +54,18 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
         '"""Generated from the vendored Rebrickable Swagger document."""',
         "",
         "from dataclasses import dataclass",
+        "from typing import Any",
         "",
         f'OPENAPI_SHA256 = "{checksum}"',
+        "",
+        "@dataclass(frozen=True, slots=True)",
+        "class Parameter:",
+        "    name: str",
+        "    location: str",
+        "    schema_type: str",
+        "    required: bool",
+        "    default: Any | None",
+        "    description: str",
         "",
         "@dataclass(frozen=True, slots=True)",
         "class Operation:",
@@ -66,6 +76,7 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
         "    form_parameters: tuple[str, ...]",
         "    required_parameters: tuple[str, ...]",
         "    encoding: str | None",
+        "    parameter_details: tuple[Parameter, ...]",
         "",
         "OPERATIONS: dict[str, Operation] = {",
     ]
@@ -84,11 +95,84 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
             for parameter in operation["parameters"]
             if parameter.get("required")
         )
+        details = tuple(
+            (
+                parameter["name"],
+                parameter["in"],
+                parameter.get("type", "string"),
+                bool(parameter.get("required")),
+                parameter.get("default"),
+                parameter.get("description", ""),
+            )
+            for parameter in operation["parameters"]
+        ) + tuple(
+            (name, "query", schema_type, False, None, "Compatibility parameter")
+            for name, schema_type in COMPATIBILITY_OVERLAY.get(
+                operation["operation_id"], {}
+            ).items()
+        )
+        rendered_details = ", ".join(
+            f"Parameter({name!r}, {location!r}, {schema_type!r}, {required!r}, "
+            f"{default!r}, {description!r})"
+            for name, location, schema_type, required, default, description in details
+        )
+        rendered_details = f"({rendered_details},)" if rendered_details else "()"
         lines.append(
             f"    {operation['operation_id']!r}: Operation({operation['method']!r}, {operation['path']!r}, "
-            f"{groups['path']!r}, {(groups['query'] + overlay)!r}, {groups['formData']!r}, {required!r}, {operation['encoding']!r}),",
+            f"{groups['path']!r}, {(groups['query'] + overlay)!r}, {groups['formData']!r}, {required!r}, "
+            f"{operation['encoding']!r}, {rendered_details}),",
         )
     lines.extend(("}", ""))
+    return "\n".join(lines)
+
+
+def _class_name(operation_id: str) -> str:
+    return "".join(part.title() for part in operation_id.split("_")) + "Query"
+
+
+def query_types_source(items: list[dict[str, Any]], checksum: str) -> str:
+    type_map = {
+        "boolean": "bool",
+        "integer": "int",
+        "number": "int | float",
+        "string": "str",
+    }
+    lines = [
+        '"""Generated query keyword contracts for the Rebrickable API."""',
+        "",
+        "from typing import TypedDict",
+        "",
+        f'OPENAPI_SHA256 = "{checksum}"',
+        "",
+    ]
+    for operation in items:
+        path_parameters = {
+            parameter["name"]
+            for parameter in operation["parameters"]
+            if parameter["in"] == "path"
+        }
+        query_parameters = {
+            parameter["name"]: parameter.get("type", "string")
+            for parameter in operation["parameters"]
+            if parameter["in"] == "query" and parameter["name"] not in path_parameters
+        }
+        query_parameters.update(
+            COMPATIBILITY_OVERLAY.get(operation["operation_id"], {})
+        )
+        has_query_parameters = any(
+            parameter["in"] == "query" for parameter in operation["parameters"]
+        ) or bool(COMPATIBILITY_OVERLAY.get(operation["operation_id"]))
+        if not has_query_parameters:
+            continue
+        lines.append(
+            f"class {_class_name(operation['operation_id'])}(TypedDict, total=False):"
+        )
+        if query_parameters:
+            for name, schema_type in query_parameters.items():
+                lines.append(f"    {name}: {type_map.get(schema_type, 'str')}")
+        else:
+            lines.append("    pass")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -106,6 +190,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--registry", type=Path, required=True)
+    parser.add_argument("--query-types", type=Path)
     parser.add_argument("--allow-new-checksum", action="store_true")
     args = parser.parse_args()
     raw = args.input.read_bytes()
@@ -120,6 +205,10 @@ def main() -> int:
             f"expected {EXPECTED_OPERATIONS} operations, found {len(items)}"
         )
     args.registry.write_text(registry_source(items, checksum), encoding="utf-8")
+    if args.query_types is not None:
+        args.query_types.write_text(
+            query_types_source(items, checksum), encoding="utf-8"
+        )
     return 0
 
 

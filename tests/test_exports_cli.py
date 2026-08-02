@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from rebrickable import cli
+from rebrickable.api.models import ApiPart, ApiUserToken
 from rebrickable.bom import Bom, BomItem
 from rebrickable.bridge.models import (
     ColorMatch,
@@ -17,6 +18,7 @@ from rebrickable.cli import main
 from rebrickable.exports import (
     catalog_bom_to_csv,
     escape_csv_formula,
+    to_csv,
     to_json,
     translation_to_csv,
 )
@@ -41,6 +43,11 @@ def test_json_serializes_frozen_mappings_and_filters_secrets() -> None:
     payload = json.loads(to_json(frozen, schema="test"))
     assert payload["data"] == {"outer": {"inner": 1}}
     assert "secret-value" not in to_json(frozen)
+    assert (
+        json.loads(to_json(ApiPart(part_num="3001", name="Brick")))["data"]["part_num"]
+        == "3001"
+    )
+    assert "secret" not in to_json(ApiUserToken(user_token="secret"))
 
 
 def _injection_report() -> TranslationReport:
@@ -94,6 +101,7 @@ def test_csv_formula_injection_is_escaped() -> None:
         [BomItem(PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1)]
     )
     assert benign.to_rebrickable_csv() == "part_num,color_id,quantity\r\n3001,4,1\r\n"
+    assert to_csv(({"b": 2, "a": "=1+1"},)) == "a,b\r\n'=1+1,2\r\n"
 
 
 def test_cli_url_and_api_spec(capsys) -> None:
