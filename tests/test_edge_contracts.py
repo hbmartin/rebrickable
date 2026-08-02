@@ -192,23 +192,56 @@ async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
         assert report.ambiguous_count == 1
         assert translation_to_csv(report, unresolved_only=True).count("\r\n") == 2
 
+        fake_parts = SimpleNamespace(
+            colours_by_code={
+                99: SimpleNamespace(code=99, name="Any", rgb="05131D", alpha=None),
+                "x": SimpleNamespace(code="x", name="Bad", rgb="000000", alpha=None),
+            }
+        )
         module = ModuleType("ldraw")
         module.bill_of_materials = lambda model, parts=None: [
-            SimpleNamespace(part="3001", colour_code=4, quantity=1)
+            SimpleNamespace(
+                part="3001", colour_code=99 if parts is not None else 4, quantity=1
+            )
         ]
-        module.load_model = lambda path: SimpleNamespace(model=object())
+        module.Parts = SimpleNamespace(get=lambda path: fake_parts)
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=object(), diagnostics=(), complete=True
+        )
         monkeypatch.setitem(sys.modules, "ldraw", module)
         assert (await session.ldraw.translate_model(object())).resolved_count == 1
-        assert (
-            await session.ldraw.translate_model_path(Path("model.ldr"))
-        ).resolved_count == 1
+        with_parts = await session.ldraw.translate_model(object(), parts=fake_parts)
+        assert with_parts.resolved_count == 1
+        assert with_parts.rows[0].rebrickable_color_id == 1
+        plain = await session.ldraw.translate_model_path(Path("model.ldr"))
+        assert plain.resolved_count == 1
+        assert plain.diagnostics == ()
+        via_library = await session.ldraw.translate_model_path(
+            Path("model.ldr"), library_path=Path("lib/parts.lst")
+        )
+        assert via_library.rows[0].rebrickable_color_id == 1
         assert (
             await session.ldraw.annotate_pyldraw_bom(
                 [SimpleNamespace(part="3001", colour_code=4, quantity=1)]
             )
         ).resolved_count == 1
-        module.load_model = lambda path: SimpleNamespace(model=None)
-        with pytest.raises(ValueError, match="could not be loaded"):
+        with_colors = await session.ldraw.annotate_pyldraw_bom(
+            [SimpleNamespace(part="3001", colour_code=99, quantity=1)],
+            parts=fake_parts,
+        )
+        assert with_colors.rows[0].rebrickable_color_id == 1
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=object(), diagnostics=("line 3: bad part",), complete=False
+        )
+        partial = await session.ldraw.translate_model_path(Path("partial.ldr"))
+        assert partial.diagnostics == (
+            "line 3: bad part",
+            "model source is incomplete",
+        )
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=None, diagnostics=("could not read model",), complete=False
+        )
+        with pytest.raises(ValueError, match="could not read model"):
             await session.ldraw.translate_model_path(Path("bad.ldr"))
 
 

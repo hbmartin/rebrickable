@@ -31,8 +31,16 @@ def use_config(monkeypatch, config: Config) -> None:
     monkeypatch.setattr(Config, "load", classmethod(lambda _cls, _path=None: config))
 
 
-def translation_report(*, resolved: bool) -> TranslationReport:
-    status = MappingStatus.RESOLVED if resolved else MappingStatus.UNRESOLVED
+def translation_report(
+    *,
+    resolved: bool,
+    ambiguous: bool = False,
+    diagnostics: tuple[str, ...] = (),
+) -> TranslationReport:
+    if ambiguous:
+        status = MappingStatus.AMBIGUOUS
+    else:
+        status = MappingStatus.RESOLVED if resolved else MappingStatus.UNRESOLVED
     part = PartMatch(
         "3001",
         "3001" if resolved else None,
@@ -64,7 +72,12 @@ def translation_report(*, resolved: bool) -> TranslationReport:
         color,
     )
     return TranslationReport(
-        (row,), int(resolved), 0, int(not resolved), "fixture-snapshot"
+        (row,),
+        int(status is MappingStatus.RESOLVED),
+        int(status is MappingStatus.AMBIGUOUS),
+        int(status is MappingStatus.UNRESOLVED),
+        "fixture-snapshot",
+        diagnostics,
     )
 
 
@@ -128,8 +141,10 @@ def test_refresh_translate_and_missing_status_cli(
 
     reports = [translation_report(resolved=True), translation_report(resolved=False)]
 
-    async def fake_translate(self, path: Path):
-        del path
+    async def fake_translate(
+        self, path: Path, *, parts=None, library_path=None, tolerant=True
+    ):
+        del path, parts, library_path, tolerant
         return reports.pop(0)
 
     monkeypatch.setattr(
@@ -155,6 +170,49 @@ def test_refresh_translate_and_missing_status_cli(
     )
     use_config(monkeypatch, missing)
     assert cli.main(["status"]) == 3
+
+
+def test_translate_ldraw_ambiguous_json_diagnostics_and_library(
+    catalog_config: Config, monkeypatch, capsys, tmp_path: Path
+) -> None:
+    use_config(monkeypatch, catalog_config)
+    captured: dict[str, object] = {}
+    reports = [
+        translation_report(resolved=False, ambiguous=True),
+        translation_report(resolved=True, diagnostics=("model source is incomplete",)),
+    ]
+
+    async def fake_translate(
+        self, path: Path, *, parts=None, library_path=None, tolerant=True
+    ):
+        del path, parts, tolerant
+        captured["library_path"] = library_path
+        return reports.pop(0)
+
+    monkeypatch.setattr(
+        "rebrickable.bridge.ldraw.LDrawBridge.translate_model_path", fake_translate
+    )
+    library = tmp_path / "lib" / "parts.lst"
+    assert (
+        cli.main(
+            [
+                "translate-ldraw",
+                str(tmp_path / "model.ldr"),
+                "--json",
+                "--unresolved-only",
+                "--ldraw-library",
+                str(library),
+            ]
+        )
+        == 4
+    )
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data[0]["status"] == "ambiguous"
+    assert captured["library_path"] == library
+
+    assert cli.main(["translate-ldraw", str(tmp_path / "model.ldr")]) == 0
+    streams = capsys.readouterr()
+    assert "[ldraw] model source is incomplete" in streams.err
 
 
 @pytest.mark.parametrize(

@@ -75,6 +75,11 @@ def _parser() -> argparse.ArgumentParser:
     output.add_argument("--json", action="store_true")
     output.add_argument("--csv", action="store_true")
     translate.add_argument("--unresolved-only", action="store_true")
+    translate.add_argument(
+        "--ldraw-library",
+        type=Path,
+        help="path to an LDraw parts.lst providing color metadata",
+    )
 
     spec = sub.add_parser("api-spec", help="print the vendored OpenAPI document")
     spec.add_argument("--output", type=Path)
@@ -171,16 +176,21 @@ async def _run(args: argparse.Namespace) -> int:
         if args.command in {"set", "minifig"}:
             return await _entity_command(session, args)
         if args.command == "translate-ldraw":
-            report = await session.ldraw.translate_model_path(args.model)
+            report = await session.ldraw.translate_model_path(
+                args.model, library_path=args.ldraw_library
+            )
             if args.csv:
                 sys.stdout.write(
                     translation_to_csv(report, unresolved_only=args.unresolved_only)
                 )
             elif args.json:
-                value = report.unresolved_rows if args.unresolved_only else report
+                value = report.incomplete_rows if args.unresolved_only else report
                 sys.stdout.write(to_json(value, schema="rebrickable.ldraw-translation"))
             else:
                 sys.stdout.write(translation_table(report))
+            if not args.json:
+                for note in report.diagnostics:
+                    print(f"[ldraw] {note}", file=sys.stderr)
             return (
                 ExitCode.OK
                 if all(row.status is MappingStatus.RESOLVED for row in report.rows)

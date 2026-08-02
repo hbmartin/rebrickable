@@ -116,6 +116,7 @@ class LDrawBridge:
         items: Iterable[LDrawBomItem],
         *,
         colors: dict[int, LDrawColorInfo] | None = None,
+        diagnostics: tuple[str, ...] = (),
     ) -> TranslationReport:
         rows: list[TranslatedBomRow] = []
         for item in items:
@@ -148,6 +149,7 @@ class LDrawBridge:
             sum(row.status is MappingStatus.AMBIGUOUS for row in rows),
             sum(row.status is MappingStatus.UNRESOLVED for row in rows),
             snapshot,
+            diagnostics,
         )
 
     async def translate_model(
@@ -162,22 +164,52 @@ class LDrawBridge:
             parts=cast("Any", parts),
         )
         items = tuple(LDrawBomItem.from_pyldraw_bom(row) for row in rows)
-        return await self.translate_bom(items)
+        return await self.translate_bom(items, colors=_colors_from_parts(parts))
 
-    async def translate_model_path(self, path: Path) -> TranslationReport:
+    async def translate_model_path(
+        self,
+        path: Path,
+        *,
+        parts: object | None = None,
+        library_path: Path | None = None,
+        tolerant: bool = True,
+    ) -> TranslationReport:
+        """Translate a model file.
+
+        Without color metadata (a ``parts`` catalog or ``library_path`` to a
+        ``parts.lst``), bare color codes resolve only through overrides or
+        cached crosswalks.
+        """
         try:
             ldraw = importlib.import_module("ldraw")
         except ImportError as exc:
             raise OptionalDependencyError("install rebrickable[ldraw]") from exc
-        result = ldraw.load_model(path)
+        if parts is None and library_path is not None:
+            parts = ldraw.Parts.get(library_path)
+        result = ldraw.load_model(path, parts=cast("Any", parts), tolerant=tolerant)
+        diagnostics = tuple(str(item) for item in getattr(result, "diagnostics", ()))
         if result.model is None:
-            raise ValueError("LDraw model could not be loaded")
-        return await self.translate_model(result.model)
+            raise ValueError(
+                "LDraw model could not be loaded: "
+                + ("; ".join(diagnostics) or "unknown failure")
+            )
+        if not getattr(result, "complete", True):
+            diagnostics = (*diagnostics, "model source is incomplete")
+        rows = ldraw.bill_of_materials(
+            cast("Any", result.model), parts=cast("Any", parts)
+        )
+        items = tuple(LDrawBomItem.from_pyldraw_bom(row) for row in rows)
+        return await self.translate_bom(
+            items, colors=_colors_from_parts(parts), diagnostics=diagnostics
+        )
 
-    async def annotate_pyldraw_bom(self, rows: Iterable[object]) -> TranslationReport:
+    async def annotate_pyldraw_bom(
+        self, rows: Iterable[object], *, parts: object | None = None
+    ) -> TranslationReport:
         """Translate public ``pyldraw3.BomRow`` objects without mutating them."""
         return await self.translate_bom(
-            tuple(LDrawBomItem.from_pyldraw_bom(row) for row in rows)
+            tuple(LDrawBomItem.from_pyldraw_bom(row) for row in rows),
+            colors=_colors_from_parts(parts),
         )
 
     async def _record_override(
@@ -242,6 +274,20 @@ class LDrawBridge:
 
     async def remove_color_override(self, ldraw_code: int) -> None:
         await self._remove_override("color", str(ldraw_code))
+
+
+def _colors_from_parts(parts: object | None) -> dict[int, LDrawColorInfo]:
+    """Build the LDraw color table from a pyldraw3 ``Parts`` catalog."""
+    mapping = getattr(parts, "colours_by_code", None)
+    if not isinstance(mapping, Mapping):
+        return {}
+    colors: dict[int, LDrawColorInfo] = {}
+    for code, colour in mapping.items():
+        try:
+            colors[int(code)] = LDrawColorInfo.from_pyldraw_colour(colour)
+        except (TypeError, ValueError):
+            continue
+    return colors
 
 
 def _external_values(external_ids: object, system: str) -> tuple[str, ...]:

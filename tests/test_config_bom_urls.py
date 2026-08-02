@@ -52,6 +52,18 @@ def test_bom_csv_normalization_diff_and_export() -> None:
     assert bom.duplicate_rows[0].occurrences == 2
     other = Bom.normalize([BomItem(PartRef("ldraw", "3001"), ColorRef("ldraw", 4), 7)])
     assert bom.diff(other).rows[0].delta == 2
+
+    assert PartRef("ldraw", " 3001B.DAT ") == PartRef("ldraw", "3001b")
+    assert PartRef("rebrickable", "3001B").value == "3001B"
+    assert ColorRef("ldraw", "4") == ColorRef("ldraw", 4)
+    with pytest.raises(ValueError, match="integer"):
+        ColorRef("ldraw", "x")
+    merged = Bom.from_csv(
+        "Part,Color,Quantity\n3001B.dat,4,2\n3001b,4,3\n 3001B ,4,1\n"
+    )
+    assert merged.unique_count == 1
+    assert merged.total_quantity == 6
+    assert bom.diff(Bom.from_csv("Part,Color,Quantity\n3001.DAT,4,5\n")).rows == ()
     rebrickable_bom = Bom.normalize(
         [BomItem(PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1)],
     )
