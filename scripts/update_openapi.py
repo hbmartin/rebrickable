@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.generate_openapi import HTTP_METHODS, operations
+    from scripts.generate_openapi import EXPECTED_OPERATIONS, operations
 except ModuleNotFoundError:  # direct `python scripts/update_openapi.py` execution
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.generate_openapi import HTTP_METHODS, operations
+    from scripts.generate_openapi import EXPECTED_OPERATIONS, operations
 
 
 def main() -> int:
@@ -28,6 +28,10 @@ def main() -> int:
     document: dict[str, Any] = json.loads(raw)
     if document.get("swagger") != "2.0" or not isinstance(document.get("paths"), dict):
         raise SystemExit("upstream document is not the expected Swagger 2.0 shape")
+    items = operations(document)
+    if len(items) != EXPECTED_OPERATIONS:
+        print(f"vendored drift with {len(items)} operations; review is required")
+        return 1
     current_module = root / "src/rebrickable/data/__init__.py"
     resource_line = next(
         line
@@ -53,41 +57,32 @@ def main() -> int:
         '__all__ = ["OPENAPI_RESOURCE"]\n',
         encoding="utf-8",
     )
-    items = operations(document)
-    if len(items) == 63:
-        subprocess.run(
-            [
-                "uv",
-                "run",
-                "python",
-                "scripts/generate_openapi.py",
-                "--input",
-                str(destination),
-                "--registry",
-                "src/rebrickable/api/operation_registry.py",
-                "--allow-new-checksum",
-            ],
-            cwd=root,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "uv",
-                "run",
-                "ruff",
-                "format",
-                "src/rebrickable/api/operation_registry.py",
-            ],
-            cwd=root,
-            check=True,
-        )
-    else:
-        count = sum(
-            method in HTTP_METHODS
-            for item in document["paths"].values()
-            for method in item
-        )
-        print(f"vendored drift with {count} operations; review is required")
+    subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/generate_openapi.py",
+            "--input",
+            str(destination),
+            "--registry",
+            "src/rebrickable/api/operation_registry.py",
+            "--allow-new-checksum",
+        ],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "run",
+            "ruff",
+            "format",
+            "src/rebrickable/api/operation_registry.py",
+        ],
+        cwd=root,
+        check=True,
+    )
     return 0
 
 

@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from filelock import FileLock, Timeout
 
 from rebrickable import CatalogStatus, Config, RebrickableSession, RefreshOutcome
 from rebrickable.catalog.database import CatalogPaths, catalog_state
-from rebrickable.errors import DatasetIntegrityError, DownloadError
+from rebrickable.errors import CatalogImportError, DatasetIntegrityError, DownloadError
 from rebrickable.progress import ProgressEvent, ProgressStage
 from rebrickable.refresh import _atomic_json, _download_one, refresh_catalog
 
@@ -72,6 +73,8 @@ async def test_complete_refresh_promotion_unchanged_and_progress(
     paths = CatalogPaths.from_config(config)
     assert paths.database_for(report.snapshot_id).is_file()
     assert (paths.snapshots_dir / report.snapshot_id / "parts.csv.gz").is_file()
+    with FileLock(paths.lock_file, timeout=0.1):
+        pass
     async with await RebrickableSession.open(config) as session:
         assert (await session.parts.require("3001")).name == "Brick 2 x 4"
 
@@ -126,6 +129,24 @@ async def test_integrity_retry_and_failed_promotion_preserve_pointer(
 
 
 @pytest.mark.asyncio
+async def test_promotion_lock_timeout_preserves_active_snapshot(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    original_pointer = paths.active_pointer.read_text()
+    sources = snapshot_sources(catalog_config)
+    monkeypatch.setattr("rebrickable.refresh._download_one", downloader(sources))
+
+    def fail_acquire(lock: object) -> None:
+        raise Timeout(str(getattr(lock, "lock_file", paths.lock_file)))
+
+    monkeypatch.setattr("rebrickable.refresh.FileLock.acquire", fail_acquire)
+    with pytest.raises(CatalogImportError, match="promotion lock"):
+        await refresh_catalog(catalog_config)
+    assert paths.active_pointer.read_text() == original_pointer
+
+
+@pytest.mark.asyncio
 async def test_schema_mismatch_refresh_reimports_despite_304s(
     catalog_config: Config, monkeypatch
 ) -> None:
@@ -144,6 +165,31 @@ async def test_schema_mismatch_refresh_reimports_despite_304s(
     assert report.outcome is RefreshOutcome.UPDATED
     assert report.snapshot_id != "fixture-snapshot"
     assert (await catalog_state(catalog_config)).status is CatalogStatus.READY
+    async with await RebrickableSession.open(catalog_config) as session:
+        assert (await session.parts.require("3001")).name == "Brick 2 x 4"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_database_refresh_reimports_despite_304s(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    sources = snapshot_sources(catalog_config)
+    paths.database_for("fixture-snapshot").write_bytes(b"not a sqlite database")
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.UNREADABLE
+
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
+    )
+    report = await refresh_catalog(catalog_config)
+
+    assert report.outcome is RefreshOutcome.UPDATED
+    assert report.snapshot_id != "fixture-snapshot"
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.READY
     async with await RebrickableSession.open(catalog_config) as session:
         assert (await session.parts.require("3001")).name == "Brick 2 x 4"
 
@@ -322,6 +368,15 @@ async def test_streaming_downloader_changed_unchanged_and_error(
         callback=None,
     )
     assert not not_changed and metadata["dataset"] == previous.dataset
+    with pytest.raises(DownloadError, match="without a prior fingerprint"):
+        await _download_one(
+            StreamClient(StreamResponse(304)),
+            url="https://example.test/file.csv.gz",
+            destination=tmp_path / "missing.csv.gz",
+            previous=None,
+            force=False,
+            callback=None,
+        )
     with pytest.raises(DownloadError):
         await _download_one(
             StreamClient(OSError("offline")),
@@ -367,10 +422,10 @@ def test_atomic_json_replaces_and_cleans_failure(tmp_path: Path, monkeypatch) ->
     _atomic_json(target, {"b": 2, "a": 1})
     assert target.read_text() == '{"a":1,"b":2}\n'
 
-    monkeypatch.setattr(
-        "rebrickable.refresh.os.replace",
-        lambda *_args: (_ for _ in ()).throw(OSError("no")),
-    )
+    def fail_replace(_source: object, _target: object) -> None:
+        raise OSError("no")
+
+    monkeypatch.setattr("rebrickable._atomic._replace", fail_replace)
     with pytest.raises(OSError):
         _atomic_json(target, {"a": 2})
     assert not tuple(tmp_path.glob(".value.json.*"))

@@ -74,10 +74,15 @@ def test_bom_csv_normalization_diff_and_export() -> None:
 
 
 def test_bom_xml_and_invalid_rows() -> None:
-    bom = Bom.from_rebrickable_xml(
-        "<INVENTORY><ITEM><ITEMID>3001</ITEMID><COLOR>4</COLOR><MINQTY>2</MINQTY></ITEM></INVENTORY>"
+    payload = (
+        "<INVENTORY><ITEM><ITEMID>3001</ITEMID><COLOR>4</COLOR>"
+        "<MINQTY>2</MINQTY></ITEM></INVENTORY>"
     )
+    bom = Bom.from_bricklink_xml(payload)
     assert bom.items[0].quantity == 2
+    assert bom.items[0].part.system.value == "bricklink"
+    assert bom.items[0].color.system.value == "bricklink"
+    assert Bom.from_rebrickable_xml(payload) == bom
     with pytest.raises(ValueError):
         Bom.from_csv("bad,header\n1,2")
     with pytest.raises(ValueError):
@@ -85,8 +90,12 @@ def test_bom_xml_and_invalid_rows() -> None:
     with pytest.raises(ValueError, match="no header"):
         Bom.from_csv("")
     with pytest.raises(ValueError, match="lacks"):
-        Bom.from_rebrickable_xml(
+        Bom.from_bricklink_xml(
             "<INVENTORY><ITEM><ITEMID>3001</ITEMID></ITEM></INVENTORY>"
+        )
+    with pytest.raises(ValueError, match="item 1"):
+        Bom.from_bricklink_xml(
+            "<INVENTORY><ITEM><ITEMID>3001</ITEMID><COLOR>x</COLOR><MINQTY>2</MINQTY></ITEM></INVENTORY>"
         )
 
 
@@ -112,12 +121,12 @@ def test_rebrickable_csv_parser_and_aliases() -> None:
 
 
 def test_bom_missing_file_and_inline_content_detection(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="not found"):
-        Bom.from_csv("missing_bom.csv")
-    with pytest.raises(FileNotFoundError, match="not found"):
-        Bom.from_csv(str(tmp_path / "nope.csv"))
-    with pytest.raises(FileNotFoundError, match="not found"):
-        Bom.from_rebrickable_xml("missing_inventory.xml")
+    with pytest.raises(FileNotFoundError, match="No such file"):
+        Bom.from_csv(Path("missing_bom.csv"))
+    with pytest.raises(FileNotFoundError, match="No such file"):
+        Bom.from_csv(tmp_path / "nope.csv")
+    with pytest.raises(FileNotFoundError, match="No such file"):
+        Bom.from_bricklink_xml(Path("missing_inventory.xml"))
     header_only = Bom.from_csv("Part,Color,Quantity")
     assert header_only.items == ()
 
@@ -130,7 +139,7 @@ def test_bom_file_sources_namespace_guard_and_python_snippet(tmp_path: Path) -> 
     xml_path.write_text(
         "<INVENTORY><ITEM><PART>3001</PART><COLOR>4</COLOR><QTY>2</QTY></ITEM></INVENTORY>"
     )
-    assert Bom.from_rebrickable_xml(xml_path).total_quantity == 2
+    assert Bom.from_bricklink_xml(xml_path).total_quantity == 2
     with pytest.raises(ValueError, match="Rebrickable identifiers"):
         Bom.from_csv(csv_path).to_rebrickable_csv()
     snippet = python_lookup_snippet("part", "3001")

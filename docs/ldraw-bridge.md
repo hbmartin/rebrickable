@@ -31,7 +31,9 @@ are normalized on load — and color override identifiers must be integers.
 `Bom.from_csv()` accepts `Part,Color,Quantity` with optional additional columns.
 `Bom.from_rebrickable_csv()` accepts Rebrickable `part_num,color_id,quantity`
 inventory/custom-list columns (plus their common aliases), and
-`Bom.from_rebrickable_xml()` accepts inventory item XML.
+`Bom.from_bricklink_xml()` accepts BrickLink wanted-list XML and preserves the
+BrickLink part and color namespaces. Pass a `Path` for file input; strings are
+always interpreted as inline content.
 Quantities must be positive. Duplicate rows are recorded before aggregation;
 normalization, diffs, validation, and Rebrickable custom-list CSV are stable.
 

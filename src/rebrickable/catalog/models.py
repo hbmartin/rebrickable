@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
-from rebrickable.types import Provenance, RelationshipType
+from rebrickable.types import RelationshipType
 from rebrickable.urls import minifig_url, part_url, set_url, theme_url
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ class BomRow:
     part: Part
     color: Color
     quantity: int
-    provenance: tuple[BomContribution | Provenance, ...]
+    provenance: tuple[BomContribution, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +151,7 @@ class SkippedInventory:
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogBom:
+class CatalogBom(Sequence[BomRow]):
     """Recursive BOM rows plus diagnostics for unexpandable sub-items."""
 
     rows: tuple[BomRow, ...]
@@ -158,3 +159,15 @@ class CatalogBom:
 
     def __iter__(self) -> Iterator[BomRow]:
         return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @overload
+    def __getitem__(self, index: int) -> BomRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[BomRow, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> BomRow | tuple[BomRow, ...]:
+        return self.rows[index]

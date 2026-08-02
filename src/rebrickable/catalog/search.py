@@ -52,12 +52,19 @@ async def search(
             conditions.append(clause)
             values.append(value)
     fts = _fts_query(normalized)
+    cte_sql = ""
+    cte_values: list[object] = []
     if normalized:
+        cte_sql = (
+            "WITH fts_hits(rowid) AS MATERIALIZED "
+            "(SELECT rowid FROM search_fts WHERE search_fts MATCH ?)"
+        )
+        cte_values.append(fts or '""')
         conditions.append(
             "(lower(canonical_id)=? OR instr(' '||lower(external_ids)||' ',' '||?||' ')>0 "
             "OR lower(canonical_id) LIKE ? ESCAPE '\\' OR normalized_name=? "
             "OR normalized_name LIKE ? ESCAPE '\\' "
-            "OR rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?) "
+            "OR rowid IN (SELECT rowid FROM fts_hits) "
             "OR normalized_name LIKE ? ESCAPE '\\')",
         )
         escaped = (
@@ -70,7 +77,6 @@ async def search(
                 f"{escaped}%",
                 normalized,
                 f"{escaped}%",
-                fts or '""',
                 f"%{escaped}%",
             ),
         )
@@ -83,7 +89,7 @@ async def search(
           WHEN lower(canonical_id) LIKE ? ESCAPE '\\' THEN 3
           WHEN normalized_name=? THEN 4
           WHEN normalized_name LIKE ? ESCAPE '\\' THEN 5
-          WHEN rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?) THEN 6
+          WHEN rowid IN (SELECT rowid FROM fts_hits) THEN 6
           ELSE 7
         END
         """
@@ -96,7 +102,6 @@ async def search(
             f"{escaped}%",
             normalized,
             f"{escaped}%",
-            fts or '""',
         ]
     else:
         rank_sql = "7"
@@ -105,6 +110,7 @@ async def search(
         await (
             await connection.execute(
                 f"""
+                {cte_sql}
                 SELECT kind, canonical_id, title, subtitle, external_ids,
                        {rank_sql} AS rank,
                        COUNT(*) OVER () AS total
@@ -113,7 +119,7 @@ async def search(
                 ORDER BY rank, kind, canonical_id
                 LIMIT ? OFFSET ?
                 """,
-                [*rank_values, *values, limit, offset],
+                [*cte_values, *rank_values, *values, limit, offset],
             )
         ).fetchall()
     )
@@ -122,7 +128,8 @@ async def search(
     elif offset:
         count_row = await (
             await connection.execute(
-                f"SELECT COUNT(*) FROM search_documents WHERE {where}", values
+                f"{cte_sql} SELECT COUNT(*) FROM search_documents WHERE {where}",
+                [*cte_values, *values],
             )
         ).fetchone()
         total = int(count_row[0]) if count_row else 0

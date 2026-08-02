@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -111,9 +113,9 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
         return SimpleNamespace(snapshot_id="x")
 
     monkeypatch.setattr("rebrickable.session.refresh_catalog", fake_refresh)
-    session = await RebrickableSession.open(catalog_config)
-    report = await session.refresh_catalog(force=True)
-    assert report.snapshot_id == "x" and calls == [True]
+    async with await RebrickableSession.open(catalog_config) as session:
+        report = await session.refresh_catalog(force=True)
+        assert report.snapshot_id == "x" and calls == [True]
 
     database = database_for(catalog_config)
     connection = sqlite3.connect(database)
@@ -259,17 +261,20 @@ async def test_override_configuration_and_external_value_edges(tmp_path: Path) -
         cache_path=tmp_path / "cache",
         mapping_overrides_path=tmp_path / "maps.yml",
     )
-    session = await RebrickableSession.open(config)
-    await session.ldraw.record_part_override("x", "3001")
-    await session.ldraw.remove_part_override("x")
+    async with await RebrickableSession.open(config) as session:
+        await session.ldraw.record_part_override("x", "3001")
+        await session.ldraw.remove_part_override("x")
+        paths = CatalogPaths.from_config(config)
+        paths.active_pointer.write_text(json.dumps({"snapshot_id": None}))
+        await session.ldraw.record_part_override("invalid-pointer", "3001")
 
-    no_path = await RebrickableSession.open(
+    async with await RebrickableSession.open(
         Config(database_path=tmp_path / "other.sqlite", cache_path=tmp_path / "cache2")
-    )
-    with pytest.raises(ValueError, match="not configured"):
-        await no_path.ldraw.record_part_override("x", "3001")
-    with pytest.raises(ValueError, match="not configured"):
-        await no_path.ldraw.remove_part_override("x")
+    ) as no_path:
+        with pytest.raises(ValueError, match="not configured"):
+            await no_path.ldraw.record_part_override("x", "3001")
+        with pytest.raises(ValueError, match="not configured"):
+            await no_path.ldraw.remove_part_override("x")
 
     assert _external_values({"Other": [1]}, "ldraw") == ()
     assert _external_values({"LDraw": {"ids": [2]}}, "ldraw") == ("2",)
@@ -297,6 +302,14 @@ def test_override_file_validation_and_atomic_failure(
     assert read_overrides(path) == ()
     path.write_text("version: 1\nparts: [{source_id: 3001.DAT, target_id: '3001'}]")
     assert read_overrides(path)[0]["source_id"] == "3001"
+    path.write_text(
+        "version: 1\n"
+        "parts:\n"
+        "  - {source_id: 3001.dat, target_id: '3001'}\n"
+        "  - {source_id: PARTS/3001.DAT, target_id: '3002'}\n"
+    )
+    with pytest.raises(ConfigLoadError, match="duplicate mapping override"):
+        read_overrides(path)
     path.write_bytes(b"\xff")
     with pytest.raises(ConfigLoadError):
         read_overrides(path)
@@ -304,7 +317,7 @@ def test_override_file_validation_and_atomic_failure(
     def fail_replace(_source: object, _target: object) -> None:
         raise OSError("no")
 
-    monkeypatch.setattr("rebrickable.bridge.overrides.os.replace", fail_replace)
+    monkeypatch.setattr("rebrickable._atomic._replace", fail_replace)
     with pytest.raises(OSError):
         write_overrides(path, ())
     assert not tuple(tmp_path.glob(".maps.yml.*"))
@@ -329,12 +342,77 @@ def test_crosswalk_and_carry_failure_edges(
     with pytest.raises(CatalogImportError):
         _carry_crosswalk(None, tmp_path / "not-a-database.sqlite")
 
+    paths = CatalogPaths.from_config(catalog_config)
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=(),
+        operation_id="lego_parts_read",
+        response_payload={},
+    )
+    paths.active_pointer.write_text(json.dumps({"snapshot_id": "missing-snapshot"}))
+    with pytest.raises(CatalogUnavailableError):
+        store_crosswalks(
+            catalog_config,
+            entity_kind="part",
+            external_system="ldraw",
+            canonical_id="3001",
+            external_ids=("x",),
+            operation_id="lego_parts_read",
+            response_payload={},
+        )
+
+
+def test_crosswalk_resolves_snapshot_after_acquiring_promotion_lock(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    old_snapshot = paths.snapshots_dir / "fixture-snapshot"
+    promoted_id = "promoted-snapshot"
+    promoted_snapshot = paths.snapshots_dir / promoted_id
+    shutil.copytree(old_snapshot, promoted_snapshot)
+
+    class PromotingLock:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> PromotingLock:
+            paths.active_pointer.write_text(json.dumps({"snapshot_id": promoted_id}))
+            shutil.rmtree(old_snapshot)
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr("rebrickable.bridge.cache.FileLock", PromotingLock)
+
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=("race-safe",),
+        operation_id="lego_parts_read",
+        response_payload={"part_num": "3001"},
+    )
+
+    with closing(sqlite3.connect(paths.database_for(promoted_id))) as connection:
+        row = connection.execute(
+            "SELECT canonical_id FROM api_crosswalk_cache WHERE external_id=?",
+            ("race-safe",),
+        ).fetchone()
+    assert row == ("3001",)
+
 
 def test_importer_parser_batches_and_failures(
     tmp_path: Path, catalog_config: Config
 ) -> None:
     assert _boolean("TRUE") == 1
     assert _boolean("false") == 0
+    assert _boolean("t") == 1
+    assert _boolean("F") == 0
     with pytest.raises(ValueError):
         _boolean("yes")
     assert _nullable_integer("") is None
@@ -351,6 +429,12 @@ def test_importer_parser_batches_and_failures(
         pass
     with pytest.raises(DatasetSchemaError):
         inspect_header(empty, DATASET_BY_NAME["parts"])
+    duplicate = tmp_path / "duplicate-parts.csv.gz"
+    with gzip.open(duplicate, "wt") as handle:
+        handle.write("part_num,name,part_cat_id,material,name\n")
+        handle.write("3001,Brick,1,Plastic,Duplicate\n")
+    with pytest.raises(DatasetSchemaError, match="duplicate columns: name"):
+        inspect_header(duplicate, DATASET_BY_NAME["parts"])
     invalid = write_dataset(
         tmp_path, "colors", [(1, "Red", "BAD", "True", 1, 1, "", "")]
     )
@@ -372,7 +456,7 @@ def test_importer_parser_batches_and_failures(
         sources[path.name.removesuffix(".csv.gz")] = path
     copied = tmp_path / "copy.sqlite"
     import_catalog(sources, copied, snapshot_id="one", retrieved_at="date")
-    with pytest.raises(DatasetIntegrityError):
+    with pytest.raises(CatalogImportError):
         import_catalog(sources, copied, snapshot_id="two", retrieved_at="date")
 
 

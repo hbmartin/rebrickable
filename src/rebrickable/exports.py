@@ -119,9 +119,13 @@ def translation_to_csv(
     return output.getvalue()
 
 
-def translation_table(report: TranslationReport) -> str:
+def translation_table(
+    report: TranslationReport, *, unresolved_only: bool = False
+) -> str:
     lines = ["LDRAW PART  COLOR  REBRICKABLE PART  COLOR  QTY  STATUS"]
     for row in report.rows:
+        if unresolved_only and row.status is MappingStatus.RESOLVED:
+            continue
         lines.append(
             f"{row.ldraw_part_num:<11} {row.ldraw_color_code:<6} "
             f"{(row.rebrickable_part_num or '-'):<17} "

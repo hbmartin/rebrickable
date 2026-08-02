@@ -194,7 +194,8 @@ async def test_every_public_operation_wrapper_and_iterator(monkeypatch) -> None:
     ]
     for name in iterator_names:
         iterator = getattr(api, name)(*iterator_args.get(name, ()))
-        await iterator.aclose()
+        async for _ in iterator:
+            pass
 
     assert {operation_id for operation_id, _ in calls} == set(api.operation_ids)
 

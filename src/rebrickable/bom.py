@@ -112,24 +112,35 @@ class Bom:
         return cls.normalize(raw)
 
     @classmethod
-    def from_rebrickable_xml(cls, source: str | Path) -> Bom:
+    def from_bricklink_xml(cls, source: str | Path) -> Bom:
+        """Parse a BrickLink wanted-list XML document."""
         text = _read_source(source, encoding="utf-8")
         root = ElementTree.fromstring(text)
         items: list[BomItem] = []
-        for element in root.findall(".//ITEM"):
+        for number, element in enumerate(root.findall(".//ITEM"), start=1):
             part = element.findtext("ITEMID") or element.findtext("PART")
             color = element.findtext("COLOR")
             quantity = element.findtext("MINQTY") or element.findtext("QTY")
             if part is None or color is None or quantity is None:
-                raise ValueError("Rebrickable XML item lacks part, color, or quantity")
-            items.append(
-                BomItem(
-                    PartRef(PartSystem.REBRICKABLE, part),
-                    ColorRef(ColorSystem.REBRICKABLE, int(color)),
-                    int(quantity),
-                ),
-            )
+                raise ValueError(
+                    f"BrickLink XML item {number} lacks part, color, or quantity"
+                )
+            try:
+                items.append(
+                    BomItem(
+                        PartRef(PartSystem.BRICKLINK, part),
+                        ColorRef(ColorSystem.BRICKLINK, int(color)),
+                        int(quantity),
+                    ),
+                )
+            except ValueError as exc:
+                raise ValueError(f"invalid BrickLink XML item {number}: {exc}") from exc
         return cls.normalize(items)
+
+    @classmethod
+    def from_rebrickable_xml(cls, source: str | Path) -> Bom:
+        """Compatibility alias for the historically misnamed BrickLink parser."""
+        return cls.from_bricklink_xml(source)
 
     @classmethod
     def from_rebrickable_csv(cls, source: str | Path) -> Bom:
@@ -249,19 +260,7 @@ class Bom:
 
 
 def _read_source(source: str | Path, *, encoding: str) -> str:
+    """Read paths explicitly and always interpret strings as inline content."""
     if isinstance(source, Path):
         return source.read_text(encoding=encoding)
-    if "\n" in source or "\r" in source:
-        return source
-    looks_like_path = source.casefold().endswith((".csv", ".xml"))
-    try:
-        path = Path(source)
-        if path.is_file():
-            return path.read_text(encoding=encoding)
-    except OSError:
-        if looks_like_path:
-            raise
-        return source
-    if looks_like_path:
-        raise FileNotFoundError(f"BOM source file not found: {source}")
     return source

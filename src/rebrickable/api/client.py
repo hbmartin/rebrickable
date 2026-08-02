@@ -281,17 +281,27 @@ class RebrickableClient:
         for attempt in range(max_attempts):
             await self._pace()
             try:
-                response = await self._transport.request(
-                    operation.method,
-                    url,
-                    headers={
-                        "Authorization": f"key {self._api_key}",
-                        "Accept": "application/json",
-                    },
-                    params=query_data or None,
-                    data=form_data or None,
-                    json=json_body,
-                )
+                headers = {
+                    "Authorization": f"key {self._api_key}",
+                    "Accept": "application/json",
+                }
+                if json_body is None:
+                    response = await self._transport.request(
+                        operation.method,
+                        url,
+                        headers=headers,
+                        params=query_data or None,
+                        data=form_data or None,
+                    )
+                else:
+                    response = await self._transport.request(
+                        operation.method,
+                        url,
+                        headers=headers,
+                        params=query_data or None,
+                        data=form_data or None,
+                        json=json_body,
+                    )
             except (httpx2.TransportError, OSError) as exc:
                 if attempt + 1 >= max_attempts:
                     raise ApiError(

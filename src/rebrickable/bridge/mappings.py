@@ -34,7 +34,7 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
             """
             SELECT target_id FROM user_mapping_overrides
             WHERE entity_kind='part' AND source_system='ldraw'
-              AND lower(source_id)=? AND target_system='rebrickable'
+              AND source_id=? COLLATE NOCASE AND target_system='rebrickable'
             """,
             (code,),
         )
@@ -55,7 +55,8 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
             await connection.execute(
                 """
             SELECT canonical_id FROM api_crosswalk_cache
-            WHERE entity_kind='part' AND external_system='ldraw' AND lower(external_id)=?
+            WHERE entity_kind='part' AND external_system='ldraw'
+              AND external_id=? COLLATE NOCASE
             ORDER BY canonical_id
             """,
                 (code,),
@@ -91,7 +92,7 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
         )
     exact = await (
         await connection.execute(
-            "SELECT part_num, name FROM parts WHERE lower(part_num)=?", (code,)
+            "SELECT part_num, name FROM parts WHERE part_num=? COLLATE NOCASE", (code,)
         )
     ).fetchone()
     if exact:
@@ -366,7 +367,11 @@ async def resolve_ldraw_color(
         code,
         None,
         MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
-        MappingSource.RGB if rgb_rows else MappingSource.NONE,
+        MappingSource.RGB
+        if rgb_rows
+        else MappingSource.NAME
+        if name_rows
+        else MappingSource.NONE,
         0.0,
         candidates,
         "multiple color candidates" if candidates else "no offline color mapping",
@@ -436,7 +441,11 @@ async def resolve_rebrickable_color(
         color_id,
         None,
         MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
-        MappingSource.API_EXTERNAL_ID if cached else MappingSource.NONE,
+        MappingSource.USER_OVERRIDE
+        if override
+        else MappingSource.API_EXTERNAL_ID
+        if cached
+        else MappingSource.NONE,
         0.0,
         candidates,
         "multiple confirmed color identifiers"

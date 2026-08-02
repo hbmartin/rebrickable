@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+EXPECTED_OPERATIONS = 63
 COMPATIBILITY_OVERLAY = {
     "lego_parts_list": {"inc_part_details": "boolean"},
     "lego_parts_read": {"inc_part_details": "boolean"},
@@ -114,8 +115,10 @@ def main() -> int:
         raise SystemExit(f"unexpected OpenAPI checksum: {checksum}")
     document = json.loads(raw)
     items = operations(document)
-    if len(items) != 63:
-        raise SystemExit(f"expected 63 operations, found {len(items)}")
+    if len(items) != EXPECTED_OPERATIONS:
+        raise SystemExit(
+            f"expected {EXPECTED_OPERATIONS} operations, found {len(items)}"
+        )
     args.registry.write_text(registry_source(items, checksum), encoding="utf-8")
     return 0
 
