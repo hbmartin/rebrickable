@@ -16,8 +16,9 @@
 - The library preserves upstream image URLs as metadata but never downloads,
   caches, renders, or opens them.
 - Catalog search ranking uses a materialized CTE and requires the runtime
-  SQLite to be 3.35 or newer (March 2021) — satisfied in practice by every
-  platform that runs Python 3.12+.
+  SQLite to be 3.35 or newer (March 2021). Python's version does not guarantee
+  the linked SQLite version; check `sqlite3.sqlite_version` when compatibility
+  is uncertain.
 - Opening a session resolves and verifies the active snapshot under the
   promotion lock, so concurrent opens serialize and may report the catalog as
   busy after `Config.lock_timeout` seconds.

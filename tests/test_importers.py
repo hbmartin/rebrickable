@@ -81,3 +81,42 @@ def test_import_catalog_build_fts_flag(tmp_path: Path) -> None:
         assert connection.execute(query).fetchone()[0] > 0
     finally:
         connection.close()
+
+
+def test_import_catalog_ignores_optimize_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OptimizeFailingConnection(sqlite3.Connection):
+        def execute(
+            self, sql: str, parameters: tuple[object, ...] = (), /
+        ) -> sqlite3.Cursor:
+            if sql == "PRAGMA optimize":
+                raise sqlite3.OperationalError("optimize failed")
+            return super().execute(sql, parameters)
+
+    real_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        kwargs["factory"] = OptimizeFailingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("rebrickable.catalog.importers.sqlite3.connect", connect)
+    files = {name: write_dataset(tmp_path, name, rows) for name, rows in ROWS.items()}
+    database = tmp_path / "catalog.sqlite"
+
+    row_counts, unknown_columns = import_catalog(
+        files,
+        database,
+        snapshot_id="optimize-failure",
+        retrieved_at="2026-08-01T00:00:00+00:00",
+    )
+
+    assert row_counts["parts"] == len(ROWS["parts"])
+    assert unknown_columns["parts"] == ()
+    connection = real_connect(database)
+    try:
+        assert connection.execute(
+            "SELECT value FROM snapshot_meta WHERE key='snapshot_id'"
+        ).fetchone() == ("optimize-failure",)
+    finally:
+        connection.close()
