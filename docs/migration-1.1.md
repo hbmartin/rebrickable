@@ -269,8 +269,8 @@ Global options must precede the subcommand. New command groups and modes are:
 - `catalog path`, `catalog doctor`, `catalog versions`, and `catalog diff`;
 - `bom normalize`, `bom diff`, and `bom validate`;
 - read-only `api part|set|minifig|parts|sets|minifigs` lookups;
-- `part --usage`, `part --sets` (with `--color-id`, `--include-spares`,
-  `--limit`, and `--offset`), and `part --relationships`;
+- `part --usage` (with `--color-id`), `part --sets` (with `--color-id`,
+  `--include-spares`, `--limit`, and `--offset`), and `part --relationships`;
 - `set|minifig --inventory --version N`;
 - search year, theme/subtheme, part-count, category, material, and offset
   filters.

@@ -6,7 +6,7 @@ API commands are read-only:
 ```text
 rebrickable status [--json]
 rebrickable refresh [--force] [--json]
-rebrickable [--format table|json|csv|yaml] search [QUERY] [FILTERS] [--offset N]
+rebrickable [--format table|json|csv|yaml] search [QUERY] [FILTERS] [--limit N] [--offset N]
 rebrickable part PART_NUM [--usage [--color-id ID] | --sets [--color-id ID] [--include-spares] [--limit N] [--offset N] | --relationships]
 rebrickable set SET_NUM [--inventory | --bom] [--version N] [--include-spares]
 rebrickable minifig FIG_NUM [--inventory | --bom] [--version N] [--include-spares]
