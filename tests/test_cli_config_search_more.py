@@ -133,6 +133,8 @@ def test_expanded_catalog_part_search_and_bom_cli(
     ]
     assert cli.main(["catalog", "diff", "100-1", "1", "2"]) == 0
     assert "InventoryDiff" in capsys.readouterr().out
+    assert cli.main(["catalog", "versions", "missing-1"]) == 3
+    assert "missing-1" in capsys.readouterr().err
     assert cli.main(["catalog", "path"]) == 0
     assert "catalog.sqlite" in capsys.readouterr().out
     assert cli.main(["--format", "json", "catalog", "doctor"]) == 0
@@ -163,6 +165,8 @@ def test_expanded_catalog_part_search_and_bom_cli(
         == 0
     )
     assert "100-1" in capsys.readouterr().out
+    assert cli.main(["search", "brick", "--include-subthemes"]) == 2
+    assert "include_subthemes" in capsys.readouterr().err
 
     bom = tmp_path / "bom.csv"
     bom.write_text("Part,Color,Quantity\n3001,4,2\n", encoding="utf-8")
@@ -170,6 +174,46 @@ def test_expanded_catalog_part_search_and_bom_cli(
     assert json.loads(capsys.readouterr().out)["data"]["unavailable_count"] == 0
     assert cli.main(["bom", "normalize", str(bom)]) == 0
     assert "Bom(" in capsys.readouterr().out
+
+
+def test_part_mode_flag_validation_and_offset(
+    catalog_config: Config, monkeypatch, capsys
+) -> None:
+    use_config(monkeypatch, catalog_config)
+
+    arguments = ["part", "3001", "--sets", "--limit", "1", "--offset", "1"]
+    assert cli.main(["--format", "json", *arguments]) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert [row["set"]["set_num"] for row in rows] == ["200-1"]
+    assert (
+        cli.main(
+            [
+                "part",
+                "3001",
+                "--sets",
+                "--color-id",
+                "4",
+                "--include-spares",
+                "--limit",
+                "5",
+                "--offset",
+                "0",
+            ]
+        )
+        == 0
+    )
+    assert "SetOccurrence" in capsys.readouterr().out
+    assert cli.main(["part", "3001", "--usage", "--color-id", "4", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["set_count"] == 1
+
+    for rejected, flag in (
+        (["part", "3001", "--limit", "10"], "--limit"),
+        (["part", "3001", "--include-spares"], "--include-spares"),
+        (["part", "3001", "--usage", "--offset", "1"], "--offset"),
+        (["part", "3001", "--relationships", "--color-id", "4"], "--color-id"),
+    ):
+        assert cli.main(rejected) == 2
+        assert flag in capsys.readouterr().err
 
 
 def test_read_only_api_cli(catalog_config: Config, monkeypatch, capsys) -> None:

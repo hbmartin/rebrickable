@@ -97,7 +97,8 @@ def _parser() -> argparse.ArgumentParser:
     part_mode.add_argument("--relationships", action="store_true")
     part.add_argument("--color-id", type=int)
     part.add_argument("--include-spares", action="store_true")
-    part.add_argument("--limit", type=int, default=50)
+    part.add_argument("--limit", type=int, default=None)
+    part.add_argument("--offset", type=int, default=None)
     part.add_argument("--json", action="store_true")
 
     for name, identifier in (("set", "set_num"), ("minifig", "fig_num")):
@@ -190,6 +191,34 @@ def _add_bom_input_options(parser: argparse.ArgumentParser) -> None:
         choices=[item.value for item in ColorSystem],
         default=ColorSystem.LDRAW.value,
     )
+
+
+_PART_MODE_FLAGS: dict[str | None, frozenset[str]] = {
+    None: frozenset(),
+    "usage": frozenset({"--color-id"}),
+    "relationships": frozenset(),
+    "sets": frozenset({"--color-id", "--include-spares", "--limit", "--offset"}),
+}
+
+
+def _check_part_flags(args: argparse.Namespace) -> None:
+    mode = next(
+        (name for name in ("usage", "sets", "relationships") if getattr(args, name)),
+        None,
+    )
+    provided = {
+        "--color-id": args.color_id is not None,
+        "--include-spares": args.include_spares,
+        "--limit": args.limit is not None,
+        "--offset": args.offset is not None,
+    }
+    allowed = _PART_MODE_FLAGS[mode]
+    rejected = [
+        flag for flag, given in provided.items() if given and flag not in allowed
+    ]
+    if rejected:
+        target = f"part --{mode}" if mode else "a plain part lookup"
+        raise ValueError(f"{', '.join(rejected)} not supported with {target}")
 
 
 def _print_entity(
@@ -357,6 +386,7 @@ async def _run(args: argparse.Namespace) -> int:
                     print(f"{hit.kind.value:<14} {hit.canonical_id:<20} {hit.title}")
             return ExitCode.OK
         if args.command == "part":
+            _check_part_flags(args)
             if args.usage:
                 value = await session.parts.usage_stats(
                     args.part_num, color_id=args.color_id
@@ -366,7 +396,8 @@ async def _run(args: argparse.Namespace) -> int:
                     args.part_num,
                     color_id=args.color_id,
                     include_spares=args.include_spares,
-                    limit=args.limit,
+                    limit=50 if args.limit is None else args.limit,
+                    offset=0 if args.offset is None else args.offset,
                 )
             elif args.relationships:
                 value = await session.parts.relationships(args.part_num)
