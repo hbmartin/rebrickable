@@ -43,7 +43,6 @@ rebrickable = "rebrickable.cli:main"
 
 [dependency-groups]
 dev = [
-  "datamodel-code-generator>=0.71",
   "deptry>=0.23",
   "hypothesis>=6.130",
   "pyrefly>=0.55",
@@ -67,9 +66,6 @@ module-name = "rebrickable"
 
 [tool.uv]
 package = true
-
-[tool.uv.sources]
-pyldraw3 = { git = "https://github.com/hbmartin/pyldraw3.git", rev = "3dd93d437b0ebdbbc27abc058be46acf9954ec27" }
 
 [tool.ruff]
 line-length = 88
