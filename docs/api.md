@@ -29,8 +29,8 @@ recursively frozen in `extra`; decoding deliberately raises `ApiDecodeError` for
 missing or malformed required fields. DTOs never escape into the local domain
 layer implicitly.
 
-Specialized mutation records and generated private query/request models are
-available through `rebrickable.api.models` and
-`rebrickable.api.generated_requests`. The compatibility overlay documents guide
+Specialized mutation records are available through `rebrickable.api.models`;
+the recorded per-operation contract lives in the generated
+`rebrickable.api.operation_registry`. The compatibility overlay documents guide
 parameters missing from Swagger, including `inc_part_details`,
 `inc_color_details`, and `inc_minifig_parts`.

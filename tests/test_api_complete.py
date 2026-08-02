@@ -10,7 +10,6 @@ import httpx2
 import pytest
 
 from rebrickable.api.client import RebrickableClient
-from rebrickable.api.generated_requests import UsersTokenCreateParameters
 from rebrickable.api.models import (
     ApiPage,
     ApiRecord,
@@ -549,7 +548,7 @@ async def test_decode_failure_204_and_pagination_cycle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_mutation_retry_policy_and_generated_secret_repr(
+async def test_explicit_mutation_retry_policy_and_secret_repr(
     monkeypatch,
 ) -> None:
     async def no_sleep(_delay: float) -> None:
@@ -571,5 +570,5 @@ async def test_explicit_mutation_retry_policy_and_generated_secret_repr(
     )
     result = await api.create_user_part_list(PartListRequest(name="List"))
     assert result.id == 1
-    generated = UsersTokenCreateParameters(username="user", password="secret")
-    assert "secret" not in repr(generated)
+    request = CreateUserTokenRequest(username="user", password="secret")
+    assert "secret" not in repr(request)

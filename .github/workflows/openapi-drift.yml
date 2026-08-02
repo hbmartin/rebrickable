@@ -25,7 +25,7 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git switch -c "$branch"
-          git add src/rebrickable/data src/rebrickable/api/operation_registry.py src/rebrickable/api/generated_requests.py
+          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py
           git commit -m 'chore: vendor upstream API drift'
           git push --force-with-lease origin "$branch"
           gh pr create --base main --head "$branch" --title 'chore: review Rebrickable API drift' --body 'Automated dated Swagger update. Parity CI intentionally remains failing for unreviewed endpoints or signature changes.' || true
