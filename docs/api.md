@@ -13,17 +13,24 @@ and detects loops.
 
 The client paces at one request per second by default. Idempotent calls retry
 connection failures and selected 5xx responses up to three times. A 429 honors
-`Retry-After`, then safe response detail, then bounded jittered backoff. Mutations
-are not replayed unless their operation explicitly opts into a mutation retry
-policy. `sync_user_sets` additionally requires `confirm_replace=True`.
+`Retry-After`, then safe response detail, then bounded jittered backoff; a
+server delay beyond `Config.max_retry_after` (300 s default) raises
+`ApiThrottledError` immediately instead of blocking. Mutations are not replayed
+unless their operation explicitly opts into a mutation retry policy.
+`sync_user_sets` additionally requires `confirm_replace=True`; it and
+multi-item `add_user_sets` POST a single JSON array body, matching the upstream
+multi-set contract. The sequential batch helpers
+(`add_user_part_list_parts`, `add_user_set_list_sets`) raise
+`BatchMutationError` on a mid-batch failure, carrying the already-accepted
+records and the failing index.
 
 Transport DTOs are frozen Pydantic v2 models. Additive response fields are
 recursively frozen in `extra`; decoding deliberately raises `ApiDecodeError` for
 missing or malformed required fields. DTOs never escape into the local domain
 layer implicitly.
 
-Specialized mutation records and generated private query/request models are
-available through `rebrickable.api.models` and
-`rebrickable.api.generated_requests`. The compatibility overlay documents guide
+Specialized mutation records are available through `rebrickable.api.models`;
+the recorded per-operation contract lives in the generated
+`rebrickable.api.operation_registry`. The compatibility overlay documents guide
 parameters missing from Swagger, including `inc_part_details`,
 `inc_color_details`, and `inc_minifig_parts`.

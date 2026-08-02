@@ -94,9 +94,12 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
         assert await session.external_ids(PartRef("bricklink", "missing")) == ()
         assert await session.substitutes(PartRef("rebrickable", "missing")) == ()
         assert await session.ldraw.resolve_rebrickable_part("3001")
-        assert (
-            await session.ldraw.resolve_rebrickable_part("3002")
-        ).target_identifier == "3002"
+        reverse = await session.ldraw.resolve_rebrickable_part("3002")
+        assert reverse.status is MappingStatus.AMBIGUOUS
+        assert reverse.target_identifier is None
+        assert reverse.candidates[0].identifier == "3002"
+        assert reverse.candidates[0].confidence == 0.5
+        assert await session.ldraw.find_ldraw_candidates("3002") == ("3002",)
         assert (
             await session.ldraw.resolve_rebrickable_part("missing")
         ).status is MappingStatus.UNRESOLVED
@@ -126,6 +129,28 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
         with pytest.raises(InventoryCycleError) as captured:
             await session.sets.bill_of_materials("100-1")
         assert captured.value.path == ("100-1", "200-1", "100-1")
+
+
+@pytest.mark.asyncio
+async def test_bom_skips_missing_sub_inventories(catalog_config: Config) -> None:
+    database = database_for(catalog_config)
+    connection = sqlite3.connect(database)
+    connection.execute("DELETE FROM inventories WHERE owner_num='fig-1'")
+    connection.commit()
+    connection.close()
+    async with await RebrickableSession.open(catalog_config) as session:
+        bom = await session.sets.bill_of_materials("100-1")
+        quantities = {(row.part.part_num, row.color.id): row.quantity for row in bom}
+        assert quantities == {("3001", 4): 2, ("3001", 1): 2}
+        assert len(bom.skipped) == 1
+        skipped = bom.skipped[0]
+        assert skipped.owner_num == "fig-1"
+        assert skipped.owner_path == ("100-1", "fig-1")
+        assert "fig-1" in skipped.reason
+        with pytest.raises(InventoryNotFoundError):
+            await session.sets.bill_of_materials("100-1", strict=True)
+        with pytest.raises(InventoryNotFoundError):
+            await session.sets.bill_of_materials("missing")
 
 
 @pytest.mark.asyncio
@@ -167,23 +192,56 @@ async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
         assert report.ambiguous_count == 1
         assert translation_to_csv(report, unresolved_only=True).count("\r\n") == 2
 
+        fake_parts = SimpleNamespace(
+            colours_by_code={
+                99: SimpleNamespace(code=99, name="Any", rgb="05131D", alpha=None),
+                "x": SimpleNamespace(code="x", name="Bad", rgb="000000", alpha=None),
+            }
+        )
         module = ModuleType("ldraw")
         module.bill_of_materials = lambda model, parts=None: [
-            SimpleNamespace(part="3001", colour_code=4, quantity=1)
+            SimpleNamespace(
+                part="3001", colour_code=99 if parts is not None else 4, quantity=1
+            )
         ]
-        module.load_model = lambda path: SimpleNamespace(model=object())
+        module.Parts = SimpleNamespace(get=lambda path: fake_parts)
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=object(), diagnostics=(), complete=True
+        )
         monkeypatch.setitem(sys.modules, "ldraw", module)
         assert (await session.ldraw.translate_model(object())).resolved_count == 1
-        assert (
-            await session.ldraw.translate_model_path(Path("model.ldr"))
-        ).resolved_count == 1
+        with_parts = await session.ldraw.translate_model(object(), parts=fake_parts)
+        assert with_parts.resolved_count == 1
+        assert with_parts.rows[0].rebrickable_color_id == 1
+        plain = await session.ldraw.translate_model_path(Path("model.ldr"))
+        assert plain.resolved_count == 1
+        assert plain.diagnostics == ()
+        via_library = await session.ldraw.translate_model_path(
+            Path("model.ldr"), library_path=Path("lib/parts.lst")
+        )
+        assert via_library.rows[0].rebrickable_color_id == 1
         assert (
             await session.ldraw.annotate_pyldraw_bom(
                 [SimpleNamespace(part="3001", colour_code=4, quantity=1)]
             )
         ).resolved_count == 1
-        module.load_model = lambda path: SimpleNamespace(model=None)
-        with pytest.raises(ValueError, match="could not be loaded"):
+        with_colors = await session.ldraw.annotate_pyldraw_bom(
+            [SimpleNamespace(part="3001", colour_code=99, quantity=1)],
+            parts=fake_parts,
+        )
+        assert with_colors.rows[0].rebrickable_color_id == 1
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=object(), diagnostics=("line 3: bad part",), complete=False
+        )
+        partial = await session.ldraw.translate_model_path(Path("partial.ldr"))
+        assert partial.diagnostics == (
+            "line 3: bad part",
+            "model source is incomplete",
+        )
+        module.load_model = lambda path, parts=None, tolerant=True: SimpleNamespace(
+            model=None, diagnostics=("could not read model",), complete=False
+        )
+        with pytest.raises(ValueError, match="could not read model"):
             await session.ldraw.translate_model_path(Path("bad.ldr"))
 
 
@@ -228,12 +286,17 @@ def test_override_file_validation_and_atomic_failure(
         "version: 1\nparts: bad",
         "version: 1\nparts: [bad]",
         "version: 1\nparts: [{source_id: ''}]",
+        "version: 1\nparts: [{source_id: '.dat', target_id: '3001'}]",
+        "version: 1\ncolors: [{source_id: x, target_id: '4'}]",
+        "version: 1\ncolors: [{source_id: '4', target_id: xyz}]",
     ):
         path.write_text(payload)
         with pytest.raises(ConfigLoadError):
             read_overrides(path)
     path.write_text("\n")
     assert read_overrides(path) == ()
+    path.write_text("version: 1\nparts: [{source_id: 3001.DAT, target_id: '3001'}]")
+    assert read_overrides(path)[0]["source_id"] == "3001"
     path.write_bytes(b"\xff")
     with pytest.raises(ConfigLoadError):
         read_overrides(path)
@@ -389,5 +452,5 @@ async def test_client_remaining_pacing_retry_close_and_models(monkeypatch) -> No
 
 
 class RaisingTransport:
-    async def request(self, method, url, *, headers, params=None, data=None):
+    async def request(self, method, url, *, headers, params=None, data=None, json=None):
         raise OSError("offline")

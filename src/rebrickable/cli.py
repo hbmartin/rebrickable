@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import io
+import os
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -19,7 +20,12 @@ from rebrickable.errors import (
     OptionalDependencyError,
     RebrickableError,
 )
-from rebrickable.exports import to_json, translation_table, translation_to_csv
+from rebrickable.exports import (
+    catalog_bom_to_csv,
+    to_json,
+    translation_table,
+    translation_to_csv,
+)
 from rebrickable.progress import ProgressEvent
 from rebrickable.session import RebrickableSession
 from rebrickable.types import CatalogStatus, ExitCode, MappingStatus, SearchKind
@@ -70,6 +76,11 @@ def _parser() -> argparse.ArgumentParser:
     output.add_argument("--json", action="store_true")
     output.add_argument("--csv", action="store_true")
     translate.add_argument("--unresolved-only", action="store_true")
+    translate.add_argument(
+        "--ldraw-library",
+        type=Path,
+        help="path to an LDraw parts.lst providing color metadata",
+    )
 
     spec = sub.add_parser("api-spec", help="print the vendored OpenAPI document")
     spec.add_argument("--output", type=Path)
@@ -105,13 +116,12 @@ async def _entity_command(session: RebrickableSession, args: argparse.Namespace)
             identifier, include_spares=args.include_spares
         )
         if args.csv:
-            lines = ["part_num,color_id,quantity"]
-            lines.extend(
-                f"{row.part.part_num},{row.color.id},{row.quantity}" for row in bom
-            )
-            sys.stdout.write("\r\n".join(lines) + "\r\n")
+            sys.stdout.write(catalog_bom_to_csv(bom.rows))
         else:
             _print_entity(bom, json_output=args.json)
+        if bom.skipped and not args.json:
+            for item in bom.skipped:
+                print(f"skipped {item.owner_num}: {item.reason}", file=sys.stderr)
     else:
         entity = await repository.require(identifier)
         _print_entity(entity, json_output=args.json)
@@ -125,19 +135,17 @@ async def _run(args: argparse.Namespace) -> int:
         return ExitCode.OK
     if args.command == "api-spec":
         resource = files("rebrickable.data").joinpath(OPENAPI_RESOURCE)
-        text = resource.read_text(encoding="utf-8")
+        raw = resource.read_bytes()
         if args.output:
-            args.output.write_text(text, encoding="utf-8")
+            args.output.write_bytes(raw)
         else:
-            parsed = json.loads(text)
-            sys.stdout.write(
-                json.dumps(parsed, sort_keys=True, separators=(",", ":")) + "\n"
-            )
+            sys.stdout.buffer.write(raw)
+            sys.stdout.flush()
         return ExitCode.OK
 
     async with await RebrickableSession.open(Config.load()) as session:
         if args.command == "status":
-            state = await session.state()
+            state = await session.state(verify=True)
             _print_entity(state, json_output=args.json)
             return (
                 ExitCode.OK
@@ -167,16 +175,21 @@ async def _run(args: argparse.Namespace) -> int:
         if args.command in {"set", "minifig"}:
             return await _entity_command(session, args)
         if args.command == "translate-ldraw":
-            report = await session.ldraw.translate_model_path(args.model)
+            report = await session.ldraw.translate_model_path(
+                args.model, library_path=args.ldraw_library
+            )
             if args.csv:
                 sys.stdout.write(
                     translation_to_csv(report, unresolved_only=args.unresolved_only)
                 )
             elif args.json:
-                value = report.unresolved_rows if args.unresolved_only else report
+                value = report.incomplete_rows if args.unresolved_only else report
                 sys.stdout.write(to_json(value, schema="rebrickable.ldraw-translation"))
             else:
                 sys.stdout.write(translation_table(report))
+            if not args.json:
+                for note in report.diagnostics:
+                    print(f"[ldraw] {note}", file=sys.stderr)
             return (
                 ExitCode.OK
                 if all(row.status is MappingStatus.RESOLVED for row in report.rows)
@@ -189,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     try:
         return int(asyncio.run(_run(parser.parse_args(argv))))
+    except BrokenPipeError:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except (OSError, ValueError, io.UnsupportedOperation):
+            pass
+        return int(ExitCode.OK)
     except (ValueError, argparse.ArgumentError, OptionalDependencyError) as exc:
         print(str(exc), file=sys.stderr)
         return int(ExitCode.INVALID_INPUT)

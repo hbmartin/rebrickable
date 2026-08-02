@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import aiosqlite
 
@@ -48,6 +49,10 @@ class CatalogPaths:
         return self.snapshots_dir / snapshot_id / "manifest.json"
 
 
+def _read_only_uri(database: Path) -> str:
+    return "file:" + quote(str(database), safe="/:") + "?mode=ro"
+
+
 def _read_pointer(paths: CatalogPaths) -> str | None:
     try:
         data = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
@@ -72,7 +77,13 @@ def _fingerprint(item: dict[str, Any]) -> FileFingerprint:
     )
 
 
-async def catalog_state(config: Config) -> CatalogState:
+async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState:
+    """Classify the active snapshot.
+
+    With ``verify=False`` (the default) a structurally present snapshot is
+    reported READY without opening SQLite; database corruption is detected by
+    ``open_catalog`` (which always verifies) or an explicit ``verify=True``.
+    """
     paths = CatalogPaths.from_config(config)
     snapshot_id = _read_pointer(paths)
     if snapshot_id is None:
@@ -134,21 +145,22 @@ async def catalog_state(config: Config) -> CatalogState:
             snapshot_id=snapshot_id,
             diagnostics=("snapshot database is missing",),
         )
-    try:
-        async with aiosqlite.connect(
-            f"file:{database}?mode=ro", uri=True
-        ) as connection:
-            row = await (await connection.execute("PRAGMA quick_check")).fetchone()
-            if row is None or row[0] != "ok":
-                raise OSError("SQLite quick_check failed")
-    except (OSError, aiosqlite.Error) as exc:
-        return CatalogState(
-            CatalogStatus.UNREADABLE,
-            database,
-            manifest_path,
-            snapshot_id=snapshot_id,
-            diagnostics=(str(exc),),
-        )
+    if verify:
+        try:
+            async with aiosqlite.connect(
+                _read_only_uri(database), uri=True
+            ) as connection:
+                row = await (await connection.execute("PRAGMA quick_check")).fetchone()
+                if row is None or row[0] != "ok":
+                    raise OSError("SQLite quick_check failed")
+        except (OSError, aiosqlite.Error) as exc:
+            return CatalogState(
+                CatalogStatus.UNREADABLE,
+                database,
+                manifest_path,
+                snapshot_id=snapshot_id,
+                diagnostics=(str(exc),),
+            )
     if retrieved_at.tzinfo is None:
         retrieved_at = retrieved_at.replace(tzinfo=UTC)
     return CatalogState(
@@ -163,7 +175,7 @@ async def catalog_state(config: Config) -> CatalogState:
 
 
 async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogState]:
-    state = await catalog_state(config)
+    state = await catalog_state(config, verify=True)
     if state.status is CatalogStatus.SCHEMA_MISMATCH:
         raise CatalogSchemaError("catalog schema does not match this release")
     if state.status is CatalogStatus.UNREADABLE:
@@ -173,9 +185,13 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
             "catalog is not ready; run `rebrickable refresh`",
         )
     connection = await aiosqlite.connect(
-        f"file:{state.database_path}?mode=ro",
+        _read_only_uri(state.database_path),
         uri=True,
     )
-    connection.row_factory = aiosqlite.Row
-    await connection.execute("PRAGMA query_only = ON")
+    try:
+        connection.row_factory = aiosqlite.Row
+        await connection.execute("PRAGMA query_only = ON")
+    except BaseException:
+        await connection.close()
+        raise
     return connection, state

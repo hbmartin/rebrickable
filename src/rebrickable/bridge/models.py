@@ -102,6 +102,7 @@ class TranslationReport:
     ambiguous_count: int
     unresolved_count: int
     snapshot_id: str
+    diagnostics: tuple[str, ...] = ()
 
     @property
     def ambiguous_rows(self) -> tuple[TranslatedBomRow, ...]:
@@ -110,3 +111,10 @@ class TranslationReport:
     @property
     def unresolved_rows(self) -> tuple[TranslatedBomRow, ...]:
         return tuple(row for row in self.rows if row.status is MappingStatus.UNRESOLVED)
+
+    @property
+    def incomplete_rows(self) -> tuple[TranslatedBomRow, ...]:
+        """Every row still needing review: ambiguous or unresolved."""
+        return tuple(
+            row for row in self.rows if row.status is not MappingStatus.RESOLVED
+        )

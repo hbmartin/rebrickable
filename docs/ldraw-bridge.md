@@ -21,8 +21,12 @@ async with await RebrickableSession.open() as session:
 No translation calls the API implicitly. `enrich_part_mapping()` and
 `enrich_color_mapping()` are explicit and require a `RebrickableClient`; confirmed
 crosswalks are serialized with catalog promotion and immediately become local
-search fields. YAML overrides are versioned, deterministic, and materialized into
-each snapshot.
+search fields. Enrichment authoritatively replaces previously cached mappings for
+the same entity and system, so re-enriching repairs stale crosswalks; mappings
+whose canonical id vanishes from a new snapshot are dropped during refresh.
+YAML overrides are versioned, deterministic, and materialized into each snapshot.
+Part `source_id` values may be written with or without the `.dat` suffix — they
+are normalized on load — and color override identifiers must be integers.
 
 `Bom.from_csv()` accepts `Part,Color,Quantity` with optional additional columns.
 `Bom.from_rebrickable_csv()` accepts Rebrickable `part_num,color_id,quantity`

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from rebrickable import Config, MappingSource, MappingStatus, RebrickableSession, cli
+from rebrickable.bridge.cache import store_crosswalks
 from rebrickable.bridge.models import (
     ColorMatch,
     PartMatch,
@@ -30,8 +31,16 @@ def use_config(monkeypatch, config: Config) -> None:
     monkeypatch.setattr(Config, "load", classmethod(lambda _cls, _path=None: config))
 
 
-def translation_report(*, resolved: bool) -> TranslationReport:
-    status = MappingStatus.RESOLVED if resolved else MappingStatus.UNRESOLVED
+def translation_report(
+    *,
+    resolved: bool,
+    ambiguous: bool = False,
+    diagnostics: tuple[str, ...] = (),
+) -> TranslationReport:
+    if ambiguous:
+        status = MappingStatus.AMBIGUOUS
+    else:
+        status = MappingStatus.RESOLVED if resolved else MappingStatus.UNRESOLVED
     part = PartMatch(
         "3001",
         "3001" if resolved else None,
@@ -63,7 +72,12 @@ def translation_report(*, resolved: bool) -> TranslationReport:
         color,
     )
     return TranslationReport(
-        (row,), int(resolved), 0, int(not resolved), "fixture-snapshot"
+        (row,),
+        int(status is MappingStatus.RESOLVED),
+        int(status is MappingStatus.AMBIGUOUS),
+        int(status is MappingStatus.UNRESOLVED),
+        "fixture-snapshot",
+        diagnostics,
     )
 
 
@@ -86,7 +100,10 @@ def test_catalog_cli_commands_and_machine_streams(
     assert cli.main(["set", "100-1", "--bom", "--csv"]) == 0
     assert capsys.readouterr().out.startswith("part_num,color_id,quantity\r\n")
     assert cli.main(["set", "100-1", "--bom", "--json", "--include-spares"]) == 0
-    assert json.loads(capsys.readouterr().out)["schema"] == "rebrickable.entity"
+    bom_payload = json.loads(capsys.readouterr().out)
+    assert bom_payload["schema"] == "rebrickable.entity"
+    assert bom_payload["data"]["rows"][0]["quantity"] == 2
+    assert bom_payload["data"]["skipped"] == []
     assert cli.main(["minifig", "fig-1", "--inventory", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["data"]["owner_num"] == "fig-1"
     assert cli.main(["set", "100-1", "--csv"]) == 2
@@ -124,8 +141,10 @@ def test_refresh_translate_and_missing_status_cli(
 
     reports = [translation_report(resolved=True), translation_report(resolved=False)]
 
-    async def fake_translate(self, path: Path):
-        del path
+    async def fake_translate(
+        self, path: Path, *, parts=None, library_path=None, tolerant=True
+    ):
+        del path, parts, library_path, tolerant
         return reports.pop(0)
 
     monkeypatch.setattr(
@@ -151,6 +170,49 @@ def test_refresh_translate_and_missing_status_cli(
     )
     use_config(monkeypatch, missing)
     assert cli.main(["status"]) == 3
+
+
+def test_translate_ldraw_ambiguous_json_diagnostics_and_library(
+    catalog_config: Config, monkeypatch, capsys, tmp_path: Path
+) -> None:
+    use_config(monkeypatch, catalog_config)
+    captured: dict[str, object] = {}
+    reports = [
+        translation_report(resolved=False, ambiguous=True),
+        translation_report(resolved=True, diagnostics=("model source is incomplete",)),
+    ]
+
+    async def fake_translate(
+        self, path: Path, *, parts=None, library_path=None, tolerant=True
+    ):
+        del path, parts, tolerant
+        captured["library_path"] = library_path
+        return reports.pop(0)
+
+    monkeypatch.setattr(
+        "rebrickable.bridge.ldraw.LDrawBridge.translate_model_path", fake_translate
+    )
+    library = tmp_path / "lib" / "parts.lst"
+    assert (
+        cli.main(
+            [
+                "translate-ldraw",
+                str(tmp_path / "model.ldr"),
+                "--json",
+                "--unresolved-only",
+                "--ldraw-library",
+                str(library),
+            ]
+        )
+        == 4
+    )
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data[0]["status"] == "ambiguous"
+    assert captured["library_path"] == library
+
+    assert cli.main(["translate-ldraw", str(tmp_path / "model.ldr")]) == 0
+    streams = capsys.readouterr()
+    assert "[ldraw] model source is incomplete" in streams.err
 
 
 @pytest.mark.parametrize(
@@ -183,6 +245,7 @@ def test_config_validation_load_write_failures_and_redaction(
         {"request_interval": -1},
         {"max_retries": -1},
         {"refresh_concurrency": 0},
+        {"snapshot_retention": 0},
     ):
         with pytest.raises(ValueError):
             Config(**kwargs)
@@ -248,3 +311,26 @@ async def test_search_validation_filters_browsing_and_escaping(
         assert material.total == 2
         assert (await session.search('3001" OR *', kinds={SearchKind.PART})).total == 0
         assert (await session.search("100%_", kinds={SearchKind.SET})).total == 0
+        past_end = await session.search("", kinds={SearchKind.PART}, limit=1, offset=5)
+        assert past_end.hits == ()
+        assert past_end.total == 2
+
+
+@pytest.mark.asyncio
+async def test_search_labels_external_id_matches(catalog_config: Config) -> None:
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=("ld-3001",),
+        operation_id="lego_parts_read",
+        response_payload={"part_num": "3001"},
+    )
+    async with await RebrickableSession.open(catalog_config) as session:
+        result = await session.search("ld-3001", kinds={SearchKind.PART})
+        assert result.total == 1
+        hit = result.hits[0]
+        assert hit.canonical_id == "3001"
+        assert hit.matched_field == "external_id"
+        assert hit.matched_value == "ld-3001"

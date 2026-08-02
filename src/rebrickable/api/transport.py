@@ -30,6 +30,7 @@ class AsyncTransport(Protocol):
         headers: Mapping[str, str],
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
+        json: Any | None = None,
     ) -> ResponseLike: ...
 
 
@@ -45,9 +46,10 @@ class HttpxTransport:
         headers: Mapping[str, str],
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
+        json: Any | None = None,
     ) -> ResponseLike:
         return await self._client.request(
-            method, url, headers=headers, params=params, data=data
+            method, url, headers=headers, params=params, data=data, json=json
         )
 
     async def close(self) -> None:

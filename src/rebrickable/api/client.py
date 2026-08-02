@@ -50,6 +50,7 @@ from rebrickable.api.models import (
     PartListUpdateRequest,
     QuantityRequest,
     SetListRequest,
+    SetListSetUpdateRequest,
     SetListUpdateRequest,
     SetQuantityRequest,
     UserSetsSyncRequest,
@@ -60,11 +61,13 @@ from rebrickable.api.transport import AsyncTransport, HttpxTransport, ResponseLi
 from rebrickable.config import Config
 from rebrickable.errors import (
     ApiAuthenticationError,
+    ApiDecodeError,
     ApiError,
     ApiForbiddenError,
     ApiNotFoundError,
     ApiServerError,
     ApiThrottledError,
+    BatchMutationError,
     PaginationCycleError,
     UserTokenRequiredError,
 )
@@ -95,6 +98,7 @@ class RebrickableClient:
             raise ValueError("api_key must not be empty")
         self._api_key = api_key
         self._user_token = user_token
+        self._secrets = {value for value in (api_key, user_token) if value}
         self._config = Config() if config is None else config
         timeout = httpx2.Timeout(
             connect=self._config.connect_timeout,
@@ -130,7 +134,13 @@ class RebrickableClient:
         resolved = token or self._user_token
         if not resolved:
             raise UserTokenRequiredError("user_token is required for this operation")
+        self._secrets.add(resolved)
         return resolved
+
+    def _redact(self, text: str) -> str:
+        for secret in self._secrets:
+            text = text.replace(secret, "<redacted>")
+        return text
 
     async def _pace(self) -> None:
         loop = asyncio.get_running_loop()
@@ -152,7 +162,9 @@ class RebrickableClient:
         return "upstream request failed"
 
     @staticmethod
-    def _retry_after(response: ResponseLike, detail: str) -> float | None:
+    def _retry_after(
+        response: ResponseLike, detail: str, *, now: datetime | None = None
+    ) -> float | None:
         header = response.headers.get("retry-after")
         if header:
             try:
@@ -160,7 +172,8 @@ class RebrickableClient:
             except ValueError:
                 try:
                     parsed = parsedate_to_datetime(header)
-                    return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
+                    reference = now or datetime.now(UTC)
+                    return max(0.0, (parsed - reference).total_seconds())
                 except (TypeError, ValueError):
                     pass
         match = _THROTTLE_SECONDS.search(detail)
@@ -174,10 +187,7 @@ class RebrickableClient:
         path_template: str,
         retry_after: float | None = None,
     ) -> ApiError:
-        detail = self._detail(response)
-        for secret in (self._api_key, self._user_token):
-            if secret:
-                detail = detail.replace(secret, "<redacted>")
+        detail = self._redact(self._detail(response))
         request_id = response.headers.get("x-request-id")
         values = (
             response.status_code,
@@ -206,6 +216,7 @@ class RebrickableClient:
         path_values: Mapping[str, str | int] | None = None,
         query: Mapping[str, QueryValue] | None = None,
         form: Mapping[str, Any] | None = None,
+        json_body: list[dict[str, Any]] | None = None,
         absolute_url: str | None = None,
         retry_mutation: bool = False,
     ) -> ResponseLike:
@@ -231,6 +242,34 @@ class RebrickableClient:
         if unknown_query or unknown_form:
             unknown = sorted(unknown_query | unknown_form)
             raise TypeError("unsupported parameters: " + ", ".join(unknown))
+        required_form = set(operation.required_parameters) & set(
+            operation.form_parameters
+        )
+        if form_data:
+            if json_body is not None:
+                raise TypeError("form and json_body are mutually exclusive")
+            missing = required_form - set(form_data)
+            if missing:
+                raise TypeError(
+                    "missing required parameters: " + ", ".join(sorted(missing))
+                )
+        if json_body is not None:
+            if (
+                operation.method not in {"POST", "PUT", "PATCH"}
+                or not operation.form_parameters
+            ):
+                raise TypeError(f"{operation_id} does not accept a JSON body")
+            for item in json_body:
+                unknown_item = set(item) - set(operation.form_parameters)
+                if unknown_item:
+                    raise TypeError(
+                        "unsupported parameters: " + ", ".join(sorted(unknown_item))
+                    )
+                missing = required_form - set(item)
+                if missing:
+                    raise TypeError(
+                        "missing required parameters: " + ", ".join(sorted(missing))
+                    )
         url = absolute_url or f"{self._config.base_url.rstrip('/')}{path}"
         idempotent = operation.method in {"GET", "DELETE"}
         retry_mutation = retry_mutation or bool(
@@ -251,6 +290,7 @@ class RebrickableClient:
                     },
                     params=query_data or None,
                     data=form_data or None,
+                    json=json_body,
                 )
             except (httpx2.TransportError, OSError) as exc:
                 if attempt + 1 >= max_attempts:
@@ -264,6 +304,13 @@ class RebrickableClient:
                 delay = self._retry_after(response, detail) or min(
                     30.0, 2**attempt + random.random()
                 )
+                if delay > self._config.max_retry_after:
+                    raise self._error(
+                        response,
+                        operation_id=operation_id,
+                        path_template=operation.path,
+                        retry_after=delay,
+                    )
                 self._throttle_until = max(
                     asyncio.get_running_loop().time() + delay, self._throttle_until
                 )
@@ -278,12 +325,23 @@ class RebrickableClient:
             if response.status_code in _TRANSIENT and attempt + 1 < max_attempts:
                 await asyncio.sleep(min(8.0, 2**attempt + random.random()))
                 continue
-            if response.status_code >= 400:
+            if response.status_code >= 300:
                 raise self._error(
                     response, operation_id=operation_id, path_template=operation.path
                 )
             return response
         raise AssertionError("request loop exhausted")  # pragma: no cover
+
+    def _json(self, response: ResponseLike, *, operation_id: str) -> Any:
+        try:
+            return response.json()
+        except ValueError as exc:
+            operation = OPERATIONS[operation_id]
+            raise ApiDecodeError(
+                operation_id=operation_id,
+                path_template=operation.path,
+                detail="successful response body was not valid JSON",
+            ) from exc
 
     async def _model(
         self,
@@ -303,12 +361,37 @@ class RebrickableClient:
             retry_mutation=retry_mutation,
         )
         payload = (
-            {} if response.status_code == 204 or not response.text else response.json()
+            {}
+            if response.status_code == 204 or not response.text
+            else self._json(response, operation_id=operation_id)
         )
         operation = OPERATIONS[operation_id]
         return decode_model(
             model, payload, operation_id=operation_id, path_template=operation.path
         )
+
+    async def _mutation(
+        self,
+        operation_id: str,
+        *,
+        path: Mapping[str, str | int],
+        json_body: list[dict[str, Any]],
+    ) -> MutationResult:
+        response = await self._send(operation_id, path_values=path, json_body=json_body)
+        operation = OPERATIONS[operation_id]
+        payload = (
+            []
+            if response.status_code == 204 or not response.text
+            else self._json(response, operation_id=operation_id)
+        )
+        items = payload if isinstance(payload, list) else [payload]
+        records = tuple(
+            decode_model(
+                ApiRecord, item, operation_id=operation_id, path_template=operation.path
+            )
+            for item in items
+        )
+        return MutationResult(accepted=records)
 
     async def _page(
         self,
@@ -328,7 +411,7 @@ class RebrickableClient:
             "ApiPage[T]",
             decode_model(
                 page_model,
-                response.json(),
+                self._json(response, operation_id=operation_id),
                 operation_id=operation_id,
                 path_template=operation.path,
             ),
@@ -354,7 +437,7 @@ class RebrickableClient:
                 return
             next_url = validate_next_url(str(page.next), self._config.base_url)
             if next_url in visited:
-                raise PaginationCycleError(next_url)
+                raise PaginationCycleError(self._redact(next_url))
             visited.add(next_url)
             page = await self._page(
                 operation_id, item, path=path, absolute_url=next_url
@@ -841,15 +924,23 @@ class RebrickableClient:
             (payload,) if isinstance(payload, PartListPartRequest) else tuple(payload)
         )
         accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_partlists_parts_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token), "list_id": list_id},
-                    form=item.form(),
+        for index, item in enumerate(items):
+            try:
+                accepted.append(
+                    await self._model(
+                        "users_partlists_parts_create",
+                        ApiRecord,
+                        path={
+                            "user_token": self._token(user_token),
+                            "list_id": list_id,
+                        },
+                        form=item.form(),
+                    )
                 )
-            )
+            except ApiError as exc:
+                raise BatchMutationError(
+                    "users_partlists_parts_create", tuple(accepted), index
+                ) from exc
         return MutationResult(accepted=tuple(accepted))
 
     async def get_user_part_list_part(
@@ -1021,15 +1112,23 @@ class RebrickableClient:
             (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
         )
         accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_setlists_sets_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token), "list_id": list_id},
-                    form=item.form(),
+        for index, item in enumerate(items):
+            try:
+                accepted.append(
+                    await self._model(
+                        "users_setlists_sets_create",
+                        ApiRecord,
+                        path={
+                            "user_token": self._token(user_token),
+                            "list_id": list_id,
+                        },
+                        form=item.form(),
+                    )
                 )
-            )
+            except ApiError as exc:
+                raise BatchMutationError(
+                    "users_setlists_sets_create", tuple(accepted), index
+                ) from exc
         return MutationResult(accepted=tuple(accepted))
 
     async def get_user_set_list_set(
@@ -1055,7 +1154,7 @@ class RebrickableClient:
         self,
         list_id: int,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,
@@ -1076,7 +1175,7 @@ class RebrickableClient:
         self,
         list_id: int,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: SetListSetUpdateRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,
@@ -1138,20 +1237,17 @@ class RebrickableClient:
         *,
         user_token: str | None = None,
     ) -> MutationResult:
-        items = (
-            (payload,) if isinstance(payload, SetQuantityRequest) else tuple(payload)
-        )
-        accepted: list[ApiRecord] = []
-        for item in items:
-            accepted.append(
-                await self._model(
-                    "users_sets_create",
-                    ApiRecord,
-                    path={"user_token": self._token(user_token)},
-                    form=item.form(),
-                )
+        path = {"user_token": self._token(user_token)}
+        if isinstance(payload, SetQuantityRequest):
+            record = await self._model(
+                "users_sets_create", ApiRecord, path=path, form=payload.form()
             )
-        return MutationResult(accepted=tuple(accepted))
+            return MutationResult(accepted=(record,))
+        return await self._mutation(
+            "users_sets_create",
+            path=path,
+            json_body=[item.form() for item in payload],
+        )
 
     async def sync_user_sets(
         self,
@@ -1162,18 +1258,10 @@ class RebrickableClient:
     ) -> MutationResult:
         if not confirm_replace:
             raise ValueError("sync_user_sets requires confirm_replace=True")
-        form = {
-            "set_num": ",".join(item.set_num or "" for item in payload.sets),
-            "quantity": ",".join(str(item.quantity) for item in payload.sets),
-            "include_spares": ",".join(
-                str(item.include_spares).lower() for item in payload.sets
-            ),
-        }
-        return await self._model(
+        return await self._mutation(
             "users_sets_sync_create",
-            MutationResult,
             path={"user_token": self._token(user_token)},
-            form=form,
+            json_body=[item.form() for item in payload.sets],
         )
 
     async def get_user_set(
@@ -1189,7 +1277,7 @@ class RebrickableClient:
     async def set_user_set_quantity(
         self,
         set_num: str,
-        payload: SetQuantityRequest,
+        payload: QuantityRequest,
         *,
         user_token: str | None = None,
         **query: QueryValue,

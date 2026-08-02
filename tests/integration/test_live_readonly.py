@@ -8,6 +8,7 @@ from rebrickable import RebrickableClient
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.enable_socket,
     pytest.mark.skipif(
         os.environ.get("REBRICKABLE_RUN_INTEGRATION") != "1",
         reason="live integration tests require an explicit guard",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from importlib.resources import files
@@ -34,9 +35,13 @@ class FakeTransport:
         self.responses = list(responses)
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
 
-    async def request(self, method, url, *, headers, params=None, data=None):
+    async def request(self, method, url, *, headers, params=None, data=None, json=None):
         self.requests.append(
-            (method, url, {"headers": headers, "params": params, "data": data})
+            (
+                method,
+                url,
+                {"headers": headers, "params": params, "data": data, "json": json},
+            )
         )
         return self.responses.pop(0)
 
@@ -115,6 +120,8 @@ def test_openapi_parity_and_public_methods() -> None:
         OPENAPI_SHA256
         == "91b49e310f8fb2db4ff7474e2775921897e10319a71ec053cac61f3a40fa7cb6"
     )
+    raw = files("rebrickable.data").joinpath(OPENAPI_RESOURCE).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == OPENAPI_SHA256
     expected = {
         "lego_colors_list": "list_colors",
         "lego_colors_read": "get_color",

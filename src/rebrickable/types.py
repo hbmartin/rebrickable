@@ -13,6 +13,12 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | MappingProxyType
 
 
+def normalize_ldraw_code(value: str) -> str:
+    """Normalize an LDraw part reference for comparison and storage."""
+    normalized = value.replace("\\", "/").casefold().strip()
+    return normalized.removesuffix(".dat")
+
+
 class CatalogStatus(StrEnum):
     READY = "ready"
     MISSING = "missing"
@@ -106,7 +112,10 @@ class PartRef:
     value: str
 
     def __init__(self, system: PartSystem | str, value: str) -> None:
-        object.__setattr__(self, "system", PartSystem(system))
+        resolved = PartSystem(system)
+        if resolved is PartSystem.LDRAW:
+            value = normalize_ldraw_code(value)
+        object.__setattr__(self, "system", resolved)
         object.__setattr__(self, "value", value)
         if not value:
             raise ValueError("part identifier must not be empty")
@@ -117,9 +126,16 @@ class ColorRef:
     system: ColorSystem
     value: int
 
-    def __init__(self, system: ColorSystem | str, value: int) -> None:
+    def __init__(self, system: ColorSystem | str, value: int | str) -> None:
         object.__setattr__(self, "system", ColorSystem(system))
-        object.__setattr__(self, "value", value)
+        if isinstance(value, str):
+            try:
+                value = int(value.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"color identifier must be an integer: {value!r}"
+                ) from exc
+        object.__setattr__(self, "value", int(value))
 
 
 @dataclass(frozen=True, slots=True)

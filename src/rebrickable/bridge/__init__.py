@@ -1,5 +1,6 @@
 """LDraw/Rebrickable bridge."""
 
+from rebrickable.bridge.ldraw import LDrawBridge
 from rebrickable.bridge.models import (
     ColorMatch,
     LDrawBomItem,
@@ -13,6 +14,7 @@ from rebrickable.bridge.models import (
 __all__ = [
     "ColorMatch",
     "LDrawBomItem",
+    "LDrawBridge",
     "LDrawColorInfo",
     "MatchCandidate",
     "PartMatch",

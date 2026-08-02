@@ -10,6 +10,7 @@ from rebrickable.api.models import PartListRequest
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.mutation,
+    pytest.mark.enable_socket,
     pytest.mark.skipif(
         os.environ.get("REBRICKABLE_RUN_MUTATIONS") != "I_UNDERSTAND",
         reason="mutation round trip requires the destructive guard",

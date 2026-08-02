@@ -15,6 +15,7 @@ from rebrickable.bom import (
 from rebrickable.bridge import (
     ColorMatch,
     LDrawBomItem,
+    LDrawBridge,
     LDrawColorInfo,
     MatchCandidate,
     PartMatch,
@@ -24,6 +25,7 @@ from rebrickable.bridge import (
 from rebrickable.catalog import (
     BomContribution,
     BomRow,
+    CatalogBom,
     Color,
     Element,
     Inventory,
@@ -35,6 +37,7 @@ from rebrickable.catalog import (
     PartCategory,
     PartRelationship,
     Set,
+    SkippedInventory,
     Theme,
 )
 from rebrickable.config import Config
@@ -46,6 +49,7 @@ from rebrickable.errors import (
     ApiNotFoundError,
     ApiServerError,
     ApiThrottledError,
+    BatchMutationError,
     CatalogImportError,
     CatalogSchemaError,
     CatalogUnavailableError,
@@ -98,6 +102,7 @@ __all__ = [
     "ApiPage",
     "ApiServerError",
     "ApiThrottledError",
+    "BatchMutationError",
     "Bom",
     "BomContribution",
     "BomDiff",
@@ -106,6 +111,7 @@ __all__ = [
     "BomRow",
     "BomValidationReport",
     "BomValidationRow",
+    "CatalogBom",
     "CatalogImportError",
     "CatalogSchemaError",
     "CatalogState",
@@ -133,6 +139,7 @@ __all__ = [
     "InventoryPart",
     "InventorySet",
     "LDrawBomItem",
+    "LDrawBridge",
     "LDrawColorInfo",
     "MappingSource",
     "MappingStatus",
@@ -160,6 +167,7 @@ __all__ = [
     "SearchKind",
     "SearchResult",
     "Set",
+    "SkippedInventory",
     "SubstitutionEvidence",
     "Theme",
     "TranslatedBomRow",

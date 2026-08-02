@@ -262,6 +262,8 @@ def validate_references(connection: sqlite3.Connection) -> None:
         "inventory color": "SELECT ip.color_id FROM inventory_parts ip LEFT JOIN colors c ON c.id=ip.color_id WHERE ip.color_id>=0 AND c.id IS NULL LIMIT 1",
         "contained set": "SELECT x.set_num FROM inventory_sets x LEFT JOIN sets s ON s.set_num=x.set_num WHERE s.set_num IS NULL LIMIT 1",
         "contained minifig": "SELECT x.fig_num FROM inventory_minifigs x LEFT JOIN minifigs f ON f.fig_num=x.fig_num WHERE f.fig_num IS NULL LIMIT 1",
+        "contained set inventory": "SELECT x.inventory_id FROM inventory_sets x LEFT JOIN inventories i ON i.id=x.inventory_id WHERE i.id IS NULL LIMIT 1",
+        "contained minifig inventory": "SELECT x.inventory_id FROM inventory_minifigs x LEFT JOIN inventories i ON i.id=x.inventory_id WHERE i.id IS NULL LIMIT 1",
     }
     failures = [
         f"{label}: {value}"
@@ -274,7 +276,9 @@ def validate_references(connection: sqlite3.Connection) -> None:
         )
 
 
-def build_search_index(connection: sqlite3.Connection) -> None:
+def build_search_index(
+    connection: sqlite3.Connection, *, build_fts: bool = True
+) -> None:
     statements = (
         "INSERT INTO search_documents(kind,canonical_id,title,subtitle,external_ids,normalized_name,category_id,material) SELECT 'part',part_num,name,'part','',lower(name),part_cat_id,material FROM parts",
         "INSERT INTO search_documents(kind,canonical_id,title,subtitle,external_ids,normalized_name,year,theme_id,num_parts) SELECT 'set',set_num,name,CAST(year AS TEXT),'',lower(name),year,theme_id,num_parts FROM sets",
@@ -286,7 +290,8 @@ def build_search_index(connection: sqlite3.Connection) -> None:
     )
     for statement in statements:
         connection.execute(statement)
-    connection.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')")
+    if build_fts:
+        connection.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')")
 
 
 def import_catalog(
@@ -296,6 +301,7 @@ def import_catalog(
     snapshot_id: str,
     retrieved_at: str,
     reporter: ProgressReporter | None = None,
+    build_fts: bool = True,
 ) -> tuple[dict[str, int], dict[str, tuple[str, ...]]]:
     row_counts: dict[str, int] = {}
     unknown_columns: dict[str, tuple[str, ...]] = {}
@@ -314,7 +320,7 @@ def import_catalog(
                     reporter(definition.name, count)
             row_counts[definition.name] = count
         validate_references(connection)
-        build_search_index(connection)
+        build_search_index(connection, build_fts=build_fts)
         metadata = {
             "schema_version": str(SCHEMA_VERSION),
             "snapshot_id": snapshot_id,

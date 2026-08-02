@@ -4,6 +4,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -48,7 +51,7 @@ jobs:
         run: |
           python -m zipfile -l dist/*.whl | grep 'rebrickable/py.typed'
           tar -tzf dist/*.tar.gz | grep 'LICENSE.txt'
-          tar -tzf dist/*.tar.gz | grep 'rebrickable-openapi-2026-08-01.json'
+          tar -tzf dist/*.tar.gz | grep -E 'rebrickable-openapi-.*\.json'
       - name: Isolated install smoke test
         run: |
           python -m venv /tmp/rebrickable-install

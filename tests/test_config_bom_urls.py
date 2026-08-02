@@ -52,6 +52,18 @@ def test_bom_csv_normalization_diff_and_export() -> None:
     assert bom.duplicate_rows[0].occurrences == 2
     other = Bom.normalize([BomItem(PartRef("ldraw", "3001"), ColorRef("ldraw", 4), 7)])
     assert bom.diff(other).rows[0].delta == 2
+
+    assert PartRef("ldraw", " 3001B.DAT ") == PartRef("ldraw", "3001b")
+    assert PartRef("rebrickable", "3001B").value == "3001B"
+    assert ColorRef("ldraw", "4") == ColorRef("ldraw", 4)
+    with pytest.raises(ValueError, match="integer"):
+        ColorRef("ldraw", "x")
+    merged = Bom.from_csv(
+        "Part,Color,Quantity\n3001B.dat,4,2\n3001b,4,3\n 3001B ,4,1\n"
+    )
+    assert merged.unique_count == 1
+    assert merged.total_quantity == 6
+    assert bom.diff(Bom.from_csv("Part,Color,Quantity\n3001.DAT,4,5\n")).rows == ()
     rebrickable_bom = Bom.normalize(
         [BomItem(PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1)],
     )
@@ -97,6 +109,17 @@ def test_rebrickable_csv_parser_and_aliases() -> None:
         Bom.from_rebrickable_csv("part_num,color_id,quantity\n3001,4,nope\n")
     with pytest.raises(ValueError, match="no header"):
         Bom.from_rebrickable_csv("")
+
+
+def test_bom_missing_file_and_inline_content_detection(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_csv("missing_bom.csv")
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_csv(str(tmp_path / "nope.csv"))
+    with pytest.raises(FileNotFoundError, match="not found"):
+        Bom.from_rebrickable_xml("missing_inventory.xml")
+    header_only = Bom.from_csv("Part,Color,Quantity")
+    assert header_only.items == ()
 
 
 def test_bom_file_sources_namespace_guard_and_python_snippet(tmp_path: Path) -> None:

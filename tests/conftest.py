@@ -66,11 +66,10 @@ def write_dataset(
     return path
 
 
-@pytest.fixture
-def catalog_config(tmp_path: Path) -> Config:
-    database_path = tmp_path / "data" / "catalog.sqlite"
-    cache_path = tmp_path / "cache"
-    overrides = tmp_path / "config" / "mappings.yml"
+def build_catalog_config(root: Path) -> Config:
+    database_path = root / "data" / "catalog.sqlite"
+    cache_path = root / "cache"
+    overrides = root / "config" / "mappings.yml"
     write_overrides(
         overrides,
         (
@@ -144,3 +143,8 @@ def catalog_config(tmp_path: Path) -> Config:
         json.dumps({"snapshot_id": snapshot_id}), encoding="utf-8"
     )
     return config
+
+
+@pytest.fixture
+def catalog_config(tmp_path: Path) -> Config:
+    return build_catalog_config(tmp_path)

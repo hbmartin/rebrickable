@@ -6,11 +6,16 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.generate_openapi import HTTP_METHODS, operations
+try:
+    from scripts.generate_openapi import HTTP_METHODS, operations
+except ModuleNotFoundError:  # direct `python scripts/update_openapi.py` execution
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.generate_openapi import HTTP_METHODS, operations
 
 
 def main() -> int:
@@ -40,6 +45,8 @@ def main() -> int:
     destination_name = f"rebrickable-openapi-{args.date}.json"
     destination = root / "src/rebrickable/data" / destination_name
     destination.write_bytes(raw)
+    if current.is_file() and current.name != destination_name:
+        current.unlink()
     current_module.write_text(
         '"""Vendored reproducibility data."""\n\n'
         f'OPENAPI_RESOURCE = "{destination_name}"\n\n'
@@ -58,8 +65,6 @@ def main() -> int:
                 str(destination),
                 "--registry",
                 "src/rebrickable/api/operation_registry.py",
-                "--models",
-                "src/rebrickable/api/generated_requests.py",
                 "--allow-new-checksum",
             ],
             cwd=root,
@@ -72,7 +77,6 @@ def main() -> int:
                 "ruff",
                 "format",
                 "src/rebrickable/api/operation_registry.py",
-                "src/rebrickable/api/generated_requests.py",
             ],
             cwd=root,
             check=True,

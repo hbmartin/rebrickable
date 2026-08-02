@@ -43,7 +43,6 @@ rebrickable = "rebrickable.cli:main"
 
 [dependency-groups]
 dev = [
-  "datamodel-code-generator>=0.71",
   "deptry>=0.23",
   "hypothesis>=6.130",
   "pyrefly>=0.55",
@@ -67,9 +66,6 @@ module-name = "rebrickable"
 
 [tool.uv]
 package = true
-
-[tool.uv.sources]
-pyldraw3 = { git = "https://github.com/hbmartin/pyldraw3.git", rev = "3dd93d437b0ebdbbc27abc058be46acf9954ec27" }
 
 [tool.ruff]
 line-length = 88
@@ -126,7 +122,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ANN001", "ANN201", "D100", "D103", "PLR2004", "PT011", "S101", "S106"]
 "scripts/*.py" = ["T201"]
-"src/rebrickable/api/generated_requests.py" = ["ERA001"]
 "src/rebrickable/api/operation_registry.py" = ["E501"]
 "src/rebrickable/bridge/ldraw.py" = ["PLC0415"]
 "src/rebrickable/bridge/models.py" = ["B009"]
@@ -135,12 +130,10 @@ ignore = [
 [tool.coverage.run]
 branch = true
 source = ["rebrickable"]
-omit = ["src/rebrickable/api/generated_requests.py"]
 
 [tool.coverage.report]
 show_missing = true
 fail_under = 97
-exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

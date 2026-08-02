@@ -267,5 +267,16 @@ class SetQuantityRequest(RequestModel):
     include_spares: bool = False
 
 
+class SetListSetUpdateRequest(RequestModel):
+    quantity: int | None = None
+    include_spares: bool | None = None
+
+
 class UserSetsSyncRequest(RequestModel):
     sets: tuple[SetQuantityRequest, ...]
+
+    @model_validator(mode="after")
+    def require_set_numbers(self) -> UserSetsSyncRequest:
+        if any(item.set_num is None for item in self.sets):
+            raise ValueError("every synced set requires set_num")
+        return self

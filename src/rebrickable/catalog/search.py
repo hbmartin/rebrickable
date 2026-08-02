@@ -75,12 +75,6 @@ async def search(
             ),
         )
     where = " AND ".join(conditions) if conditions else "1"
-    count_row = await (
-        await connection.execute(
-            f"SELECT COUNT(*) FROM search_documents WHERE {where}", values
-        )
-    ).fetchone()
-    total = int(count_row[0]) if count_row else 0
     if normalized:
         rank_sql = """
         CASE
@@ -107,29 +101,51 @@ async def search(
     else:
         rank_sql = "7"
         rank_values = []
-    rows = await (
-        await connection.execute(
-            f"""
-            SELECT kind, canonical_id, title, subtitle, external_ids,
-                   {rank_sql} AS rank
-            FROM search_documents
-            WHERE {where}
-            ORDER BY rank, kind, canonical_id
-            LIMIT ? OFFSET ?
-            """,
-            [*rank_values, *values, limit, offset],
-        )
-    ).fetchall()
-    hits = tuple(
-        SearchHit(
-            SearchKind(row["kind"]),
-            row["canonical_id"],
-            row["title"],
-            row["subtitle"],
-            float(8 - int(row["rank"])),
-            "canonical_id" if int(row["rank"]) in {1, 3} else "name",
-            row["canonical_id"] if int(row["rank"]) in {1, 3} else row["title"],
-        )
-        for row in rows
+    rows = list(
+        await (
+            await connection.execute(
+                f"""
+                SELECT kind, canonical_id, title, subtitle, external_ids,
+                       {rank_sql} AS rank,
+                       COUNT(*) OVER () AS total
+                FROM search_documents
+                WHERE {where}
+                ORDER BY rank, kind, canonical_id
+                LIMIT ? OFFSET ?
+                """,
+                [*rank_values, *values, limit, offset],
+            )
+        ).fetchall()
     )
-    return SearchResult(hits, total, snapshot_id)
+    if rows:
+        total = int(rows[0]["total"])
+    elif offset:
+        count_row = await (
+            await connection.execute(
+                f"SELECT COUNT(*) FROM search_documents WHERE {where}", values
+            )
+        ).fetchone()
+        total = int(count_row[0]) if count_row else 0
+    else:
+        total = 0
+    hits: list[SearchHit] = []
+    for row in rows:
+        rank = int(row["rank"])
+        if rank in {1, 3}:
+            matched_field, matched_value = "canonical_id", row["canonical_id"]
+        elif rank == 2:
+            matched_field, matched_value = "external_id", normalized
+        else:
+            matched_field, matched_value = "name", row["title"]
+        hits.append(
+            SearchHit(
+                SearchKind(row["kind"]),
+                row["canonical_id"],
+                row["title"],
+                row["subtitle"],
+                float(8 - rank),
+                matched_field,
+                matched_value,
+            )
+        )
+    return SearchResult(tuple(hits), total, snapshot_id)
