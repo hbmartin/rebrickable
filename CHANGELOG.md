@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 - 2026-08-02
 
-Pre-release review fixes; several behaviors changed while the API is unreleased:
+First stable release. Pre-release review fixes; several behaviors changed
+before the public API was committed:
 
 - `refresh()` re-imports after a schema upgrade instead of reporting UNCHANGED
   against an incompatible snapshot; promotion is two-phase and atomic, and
