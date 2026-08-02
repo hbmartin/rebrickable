@@ -127,6 +127,10 @@ def test_bom_missing_file_and_inline_content_detection(tmp_path: Path) -> None:
         Bom.from_csv(tmp_path / "nope.csv")
     with pytest.raises(FileNotFoundError, match="No such file"):
         Bom.from_bricklink_xml(Path("missing_inventory.xml"))
+    with pytest.raises(ValueError, match=r"pass pathlib\.Path"):
+        Bom.from_csv("missing_bom.csv")
+    with pytest.raises(ValueError, match=r"pass pathlib\.Path"):
+        Bom.from_bricklink_xml("missing_inventory.xml")
     header_only = Bom.from_csv("Part,Color,Quantity")
     assert header_only.items == ()
 

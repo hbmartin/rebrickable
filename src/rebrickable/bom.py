@@ -263,4 +263,13 @@ def _read_source(source: str | Path, *, encoding: str) -> str:
     """Read paths explicitly and always interpret strings as inline content."""
     if isinstance(source, Path):
         return source.read_text(encoding=encoding)
+    if (
+        "\n" not in source
+        and "\r" not in source
+        and source.casefold().endswith((".csv", ".xml"))
+    ):
+        raise ValueError(
+            f"string sources are inline content; pass pathlib.Path({source!r}) "
+            "to read a file"
+        )
     return source

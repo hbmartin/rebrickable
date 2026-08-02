@@ -8,6 +8,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -345,8 +346,11 @@ def import_catalog(
             raise DatasetIntegrityError("SQLite integrity_check failed")
         connection.commit()
         committed = True
-        connection.execute("PRAGMA optimize")
-        connection.commit()
+        # The import is durable once committed; optimize is advisory and must
+        # not fail an otherwise valid snapshot.
+        with suppress(sqlite3.Error, OSError):
+            connection.execute("PRAGMA optimize")
+            connection.commit()
     except (sqlite3.Error, OSError, EOFError) as exc:
         if not committed:
             connection.rollback()

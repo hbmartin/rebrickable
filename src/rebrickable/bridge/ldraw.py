@@ -356,6 +356,9 @@ def _persist_override(
                 "reason": reason,
             }
         )
+        # The active database is updated before the YAML file: a failed
+        # database write must not record the override durably, while a
+        # database-only write is rebuilt away at the next materialization.
         if database is not None:
             connection = sqlite3.connect(database)
             try:
