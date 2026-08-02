@@ -66,24 +66,37 @@ async def load_inventory(connection: aiosqlite.Connection, owner_num: str) -> In
             (inventory_id,),
         )
     ).fetchall()
-    parts: list[InventoryPart] = []
-    for part_row in part_rows:
-        element_rows = await (
-            await connection.execute(
-                "SELECT element_id FROM elements WHERE part_num=? AND color_id=? ORDER BY element_id",
-                (part_row["part_num"], part_row["color_id"]),
-            )
-        ).fetchall()
-        parts.append(
-            InventoryPart(
-                _part(part_row),
-                _color(part_row),
-                int(part_row["quantity"]),
-                bool(part_row["is_spare"]),
-                tuple(str(item[0]) for item in element_rows),
-                part_row["image_url"],
-            ),
+    element_rows = await (
+        await connection.execute(
+            """
+            SELECT DISTINCT e.part_num, e.color_id, e.element_id
+            FROM elements e
+            JOIN inventory_parts ip
+              ON ip.part_num = e.part_num AND ip.color_id = e.color_id
+            WHERE ip.inventory_id=?
+            ORDER BY e.part_num, e.color_id, e.element_id
+            """,
+            (inventory_id,),
         )
+    ).fetchall()
+    elements_by_key: defaultdict[tuple[str, int], list[str]] = defaultdict(list)
+    for element_row in element_rows:
+        elements_by_key[(element_row["part_num"], element_row["color_id"])].append(
+            str(element_row["element_id"])
+        )
+    parts = [
+        InventoryPart(
+            _part(part_row),
+            _color(part_row),
+            int(part_row["quantity"]),
+            bool(part_row["is_spare"]),
+            tuple(
+                elements_by_key.get((part_row["part_num"], part_row["color_id"]), ())
+            ),
+            part_row["image_url"],
+        )
+        for part_row in part_rows
+    ]
     set_rows = await (
         await connection.execute(
             """

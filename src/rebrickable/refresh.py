@@ -302,6 +302,7 @@ async def _refresh_attempt(
             snapshot_id=snapshot_id,
             retrieved_at=now.isoformat(),
             reporter=reporter,
+            build_fts=False,
         )
         await asyncio.to_thread(
             materialize_overrides, config.mapping_overrides_path, database

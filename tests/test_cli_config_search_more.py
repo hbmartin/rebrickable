@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from rebrickable import Config, MappingSource, MappingStatus, RebrickableSession, cli
+from rebrickable.bridge.cache import store_crosswalks
 from rebrickable.bridge.models import (
     ColorMatch,
     PartMatch,
@@ -249,3 +250,26 @@ async def test_search_validation_filters_browsing_and_escaping(
         assert material.total == 2
         assert (await session.search('3001" OR *', kinds={SearchKind.PART})).total == 0
         assert (await session.search("100%_", kinds={SearchKind.SET})).total == 0
+        past_end = await session.search("", kinds={SearchKind.PART}, limit=1, offset=5)
+        assert past_end.hits == ()
+        assert past_end.total == 2
+
+
+@pytest.mark.asyncio
+async def test_search_labels_external_id_matches(catalog_config: Config) -> None:
+    store_crosswalks(
+        catalog_config,
+        entity_kind="part",
+        external_system="ldraw",
+        canonical_id="3001",
+        external_ids=("ld-3001",),
+        operation_id="lego_parts_read",
+        response_payload={"part_num": "3001"},
+    )
+    async with await RebrickableSession.open(catalog_config) as session:
+        result = await session.search("ld-3001", kinds={SearchKind.PART})
+        assert result.total == 1
+        hit = result.hits[0]
+        assert hit.canonical_id == "3001"
+        assert hit.matched_field == "external_id"
+        assert hit.matched_value == "ld-3001"

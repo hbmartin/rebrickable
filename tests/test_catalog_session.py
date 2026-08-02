@@ -135,6 +135,24 @@ async def test_open_catalog_closes_connection_on_pragma_failure(
 
 
 @pytest.mark.asyncio
+async def test_load_inventory_batches_element_queries(catalog_config: Config) -> None:
+    async with await RebrickableSession.open(catalog_config) as session:
+        connection = await session._connection()
+        statements: list[str] = []
+        await connection.set_trace_callback(statements.append)
+        inventory = await session.sets.inventory("100-1")
+        await connection.set_trace_callback(None)
+        element_queries = [s for s in statements if "FROM elements" in s]
+        assert len(element_queries) == 1
+        by_key = {
+            (item.part.part_num, item.color.id): item.element_ids
+            for item in inventory.parts
+        }
+        assert by_key[("3001", 4)] == ("3001004",)
+        assert by_key[("3002", 4)] == ("3002004",)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_first_connection_opens_once(
     catalog_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
