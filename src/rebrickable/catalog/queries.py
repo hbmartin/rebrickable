@@ -25,6 +25,11 @@ from rebrickable.catalog.models import (
     SetOccurrence,
     Theme,
 )
+from rebrickable.catalog.traversal import (
+    MAX_TRAVERSAL_DEPTH,
+    THEME_LINEAGE_CTE,
+    THEME_SUBTREE_CTE,
+)
 from rebrickable.errors import EntityNotFoundError, InventoryNotFoundError
 from rebrickable.types import RelationshipType
 
@@ -190,7 +195,9 @@ class PartsRepository(Repository[Part]):
             for row in rows
         )
 
-    async def canonical_mold(self, part_num: str, *, max_depth: int = 100) -> str:
+    async def canonical_mold(
+        self, part_num: str, *, max_depth: int = MAX_TRAVERSAL_DEPTH
+    ) -> str:
         """Follow mold-parent edges to their deterministic canonical endpoint."""
         if max_depth < 1:
             raise ValueError("max_depth must be positive")
@@ -409,54 +416,39 @@ class ThemesRepository(Repository[Theme]):
         return None if theme.parent_id is None else await self.get(theme.parent_id)
 
     async def lineage(self, theme_id: int) -> tuple[Theme, ...]:
+        """Return the theme and its ancestors, outermost ancestor first.
+
+        Traversal is silently truncated at ``MAX_TRAVERSAL_DEPTH`` ancestors,
+        so the first element is the hierarchy root only when the chain fits
+        within that bound; cyclic parent links are traversed once.
+        """
         await self.require(theme_id)
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                """
-                WITH RECURSIVE ancestors(id, name, parent_id, depth) AS (
-                    SELECT id, name, parent_id, 0 FROM themes WHERE id=?
-                    UNION ALL
-                    SELECT t.id, t.name, t.parent_id, a.depth + 1
-                    FROM themes t JOIN ancestors a ON t.id=a.parent_id
-                    WHERE a.depth < 100
-                )
-                SELECT id, name, parent_id FROM ancestors ORDER BY depth
-                """,
+                f"WITH RECURSIVE {THEME_LINEAGE_CTE} "
+                "SELECT t.id, t.name, t.parent_id "
+                "FROM theme_lineage tl JOIN themes t ON t.id=tl.id "
+                "ORDER BY tl.depth DESC",
                 (theme_id,),
             )
         ).fetchall()
-        unique = {row["id"]: row for row in rows}
-        return tuple(
-            Theme(row["id"], row["name"], row["parent_id"])
-            for row in reversed(unique.values())
-        )
+        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
 
     async def descendants(self, theme_id: int) -> tuple[Theme, ...]:
+        """Return all subthemes breadth-first, bounded to MAX_TRAVERSAL_DEPTH levels."""
         await self.require(theme_id)
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                """
-                WITH RECURSIVE descendants(id, name, parent_id, depth) AS (
-                    SELECT id, name, parent_id, 0 FROM themes WHERE id=?
-                    UNION ALL
-                    SELECT t.id, t.name, t.parent_id, d.depth + 1
-                    FROM themes t JOIN descendants d ON t.parent_id=d.id
-                    WHERE d.depth < 100
-                )
-                SELECT id, name, parent_id FROM descendants
-                WHERE depth > 0 ORDER BY depth, id
-                """,
+                f"WITH RECURSIVE {THEME_SUBTREE_CTE} "
+                "SELECT t.id, t.name, t.parent_id "
+                "FROM theme_tree tt JOIN themes t ON t.id=tt.id "
+                "WHERE tt.depth > 0 ORDER BY tt.depth, tt.id",
                 (theme_id,),
             )
         ).fetchall()
-        unique = {row["id"]: row for row in rows}
-        return tuple(
-            Theme(row["id"], row["name"], row["parent_id"])
-            for row in unique.values()
-            if row["id"] != theme_id
-        )
+        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
 
 
 class ColorsRepository(Repository[Color]):

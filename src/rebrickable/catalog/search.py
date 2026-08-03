@@ -6,6 +6,7 @@ import re
 
 import aiosqlite
 
+from rebrickable.catalog.traversal import THEME_SUBTREE_CTE
 from rebrickable.types import SearchFilters, SearchHit, SearchKind, SearchResult
 
 
@@ -56,16 +57,9 @@ async def search(
             values.append(value)
     if active_filters.theme_id is not None:
         if active_filters.include_subthemes:
-            ctes.append(
-                "theme_tree(id, depth, path) AS ("
-                "SELECT id, 0, printf('/%d/', id) FROM themes WHERE id=? UNION ALL "
-                "SELECT t.id, tt.depth + 1, tt.path || t.id || '/' "
-                "FROM themes t JOIN theme_tree tt ON t.parent_id=tt.id "
-                "WHERE tt.depth < 100 "
-                "AND instr(tt.path, printf('/%d/', t.id)) = 0)"
-            )
+            ctes.append(THEME_SUBTREE_CTE)
             cte_values.append(active_filters.theme_id)
-            conditions.append("theme_id IN (SELECT DISTINCT id FROM theme_tree)")
+            conditions.append("theme_id IN (SELECT id FROM theme_tree)")
         else:
             conditions.append("theme_id = ?")
             values.append(active_filters.theme_id)
