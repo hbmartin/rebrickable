@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-OPENAPI_SHA256 = "91b49e310f8fb2db4ff7474e2775921897e10319a71ec053cac61f3a40fa7cb6"
+OPENAPI_SHA256 = "3dc9f0e24ecec0e16c02358a91af51766cae4a1181ed0fe5197d0fa9fd100cea"
 
 
 @dataclass(frozen=True, slots=True)
@@ -926,14 +926,14 @@ OPERATIONS: dict[str, Operation] = {
     "users_lost_parts_delete": Operation(
         "DELETE",
         "/users/{user_token}/lost_parts/{id}/",
-        ("user_token", "id"),
+        ("id", "user_token"),
         ("ordering",),
         (),
-        ("user_token", "id"),
+        ("id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter(
                 "ordering",
                 "query",
@@ -1028,27 +1028,27 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_read": Operation(
         "GET",
         "/users/{user_token}/partlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
         ),
     ),
     "users_partlists_update": Operation(
         "PUT",
         "/users/{user_token}/partlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("is_buildable", "name", "num_parts"),
-        ("user_token", "list_id", "name"),
+        ("list_id", "user_token", "name"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("is_buildable", "formData", "boolean", False, None, ""),
             Parameter("name", "formData", "string", True, None, ""),
             Parameter("num_parts", "formData", "integer", False, None, ""),
@@ -1057,14 +1057,14 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_partial_update": Operation(
         "PATCH",
         "/users/{user_token}/partlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("is_buildable", "name", "num_parts"),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("is_buildable", "formData", "boolean", False, None, ""),
             Parameter("name", "formData", "string", False, None, ""),
             Parameter("num_parts", "formData", "integer", False, None, ""),
@@ -1073,27 +1073,27 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_delete": Operation(
         "DELETE",
         "/users/{user_token}/partlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
         ),
     ),
     "users_partlists_parts_list": Operation(
         "GET",
         "/users/{user_token}/partlists/{list_id}/parts/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         ("page", "page_size", "ordering", "inc_part_details", "inc_color_details"),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter(
                 "page",
                 "query",
@@ -1139,14 +1139,14 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_parts_create": Operation(
         "POST",
         "/users/{user_token}/partlists/{list_id}/parts/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("part_num", "quantity", "color_id"),
-        ("user_token", "list_id", "part_num", "quantity", "color_id"),
+        ("list_id", "user_token", "part_num", "quantity", "color_id"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("part_num", "formData", "string", True, None, ""),
             Parameter("quantity", "formData", "integer", True, None, ""),
             Parameter("color_id", "formData", "integer", True, None, ""),
@@ -1155,16 +1155,16 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_parts_read": Operation(
         "GET",
         "/users/{user_token}/partlists/{list_id}/parts/{part_num}/{color_id}/",
-        ("part_num", "color_id", "user_token", "list_id"),
+        ("part_num", "list_id", "color_id", "user_token"),
         ("ordering",),
         (),
-        ("part_num", "color_id", "user_token", "list_id"),
+        ("part_num", "list_id", "color_id", "user_token"),
         None,
         (
             Parameter("part_num", "path", "string", True, None, ""),
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("color_id", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter(
                 "ordering",
                 "query",
@@ -1178,16 +1178,16 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_parts_update": Operation(
         "PUT",
         "/users/{user_token}/partlists/{list_id}/parts/{part_num}/{color_id}/",
-        ("part_num", "color_id", "user_token", "list_id"),
+        ("part_num", "list_id", "color_id", "user_token"),
         ("ordering",),
         ("quantity",),
-        ("part_num", "color_id", "user_token", "list_id", "quantity"),
+        ("part_num", "list_id", "color_id", "user_token", "quantity"),
         "application/x-www-form-urlencoded",
         (
             Parameter("part_num", "path", "string", True, None, ""),
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("color_id", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("quantity", "formData", "integer", True, None, ""),
             Parameter(
                 "ordering",
@@ -1202,16 +1202,16 @@ OPERATIONS: dict[str, Operation] = {
     "users_partlists_parts_delete": Operation(
         "DELETE",
         "/users/{user_token}/partlists/{list_id}/parts/{part_num}/{color_id}/",
-        ("part_num", "color_id", "user_token", "list_id"),
+        ("part_num", "list_id", "color_id", "user_token"),
         ("ordering",),
         (),
-        ("part_num", "color_id", "user_token", "list_id"),
+        ("part_num", "list_id", "color_id", "user_token"),
         None,
         (
             Parameter("part_num", "path", "string", True, None, ""),
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("color_id", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter(
                 "ordering",
                 "query",
@@ -1335,27 +1335,27 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_read": Operation(
         "GET",
         "/users/{user_token}/setlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
         ),
     ),
     "users_setlists_update": Operation(
         "PUT",
         "/users/{user_token}/setlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("is_buildable", "name", "num_sets"),
-        ("user_token", "list_id", "name"),
+        ("list_id", "user_token", "name"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("is_buildable", "formData", "boolean", False, None, ""),
             Parameter("name", "formData", "string", True, None, ""),
             Parameter("num_sets", "formData", "integer", False, None, ""),
@@ -1364,14 +1364,14 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_partial_update": Operation(
         "PATCH",
         "/users/{user_token}/setlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("is_buildable", "name", "num_sets"),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("is_buildable", "formData", "boolean", False, None, ""),
             Parameter("name", "formData", "string", False, None, ""),
             Parameter("num_sets", "formData", "integer", False, None, ""),
@@ -1380,27 +1380,27 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_delete": Operation(
         "DELETE",
         "/users/{user_token}/setlists/{list_id}/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
         ),
     ),
     "users_setlists_sets_list": Operation(
         "GET",
         "/users/{user_token}/setlists/{list_id}/sets/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         ("page", "page_size", "ordering"),
         (),
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         None,
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter(
                 "page",
                 "query",
@@ -1430,14 +1430,14 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_sets_create": Operation(
         "POST",
         "/users/{user_token}/setlists/{list_id}/sets/",
-        ("user_token", "list_id"),
+        ("list_id", "user_token"),
         (),
         ("set_num", "quantity", "include_spares"),
-        ("user_token", "list_id", "set_num"),
+        ("list_id", "user_token", "set_num"),
         "application/x-www-form-urlencoded",
         (
-            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("list_id", "path", "string", True, None, ""),
+            Parameter("user_token", "path", "string", True, None, ""),
             Parameter("set_num", "formData", "string", True, None, ""),
             Parameter("quantity", "formData", "integer", False, None, ""),
             Parameter("include_spares", "formData", "boolean", False, None, ""),
@@ -1446,15 +1446,15 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_sets_read": Operation(
         "GET",
         "/users/{user_token}/setlists/{list_id}/sets/{set_num}/",
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         ("ordering",),
         (),
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         None,
         (
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("set_num", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter(
                 "ordering",
                 "query",
@@ -1468,15 +1468,15 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_sets_update": Operation(
         "PUT",
         "/users/{user_token}/setlists/{list_id}/sets/{set_num}/",
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         ("ordering",),
         ("quantity", "include_spares"),
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         "application/x-www-form-urlencoded",
         (
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("set_num", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("quantity", "formData", "integer", False, None, ""),
             Parameter("include_spares", "formData", "boolean", False, None, ""),
             Parameter(
@@ -1492,15 +1492,15 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_sets_partial_update": Operation(
         "PATCH",
         "/users/{user_token}/setlists/{list_id}/sets/{set_num}/",
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         ("ordering",),
         ("quantity", "include_spares"),
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         "application/x-www-form-urlencoded",
         (
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("set_num", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("quantity", "formData", "integer", False, None, ""),
             Parameter("include_spares", "formData", "boolean", False, None, ""),
             Parameter(
@@ -1516,15 +1516,15 @@ OPERATIONS: dict[str, Operation] = {
     "users_setlists_sets_delete": Operation(
         "DELETE",
         "/users/{user_token}/setlists/{list_id}/sets/{set_num}/",
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         ("ordering",),
         (),
-        ("set_num", "user_token", "list_id"),
+        ("list_id", "set_num", "user_token"),
         None,
         (
+            Parameter("list_id", "path", "string", True, None, ""),
             Parameter("set_num", "path", "string", True, None, ""),
             Parameter("user_token", "path", "string", True, None, ""),
-            Parameter("list_id", "path", "string", True, None, ""),
             Parameter(
                 "ordering",
                 "query",
