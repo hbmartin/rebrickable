@@ -30,4 +30,4 @@ jobs:
       - name: Run repository guardrails
         # semgrep 1.136.0 crashes on Python 3.14 (custom tp_new metaclasses).
         run: uvx --python 3.12 --from semgrep==1.136.0 --with 'setuptools<81' semgrep --config .semgrep.yml --error
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
