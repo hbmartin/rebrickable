@@ -2,7 +2,7 @@
 
 from typing import TypedDict
 
-OPENAPI_SHA256 = "91b49e310f8fb2db4ff7474e2775921897e10319a71ec053cac61f3a40fa7cb6"
+OPENAPI_SHA256 = "3dc9f0e24ecec0e16c02358a91af51766cae4a1181ed0fe5197d0fa9fd100cea"
 
 
 class LegoColorsListQuery(TypedDict, total=False):
