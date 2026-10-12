@@ -4,8 +4,10 @@ import asyncio
 import json
 import shutil
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
+import aiosqlite
 import pytest
 from filelock import Timeout
 
@@ -153,6 +155,26 @@ async def test_catalog_analytics_and_inventory_history(catalog_config: Config) -
             await session.parts.canonical_mold("3001", max_depth=0)
         with pytest.raises(ValueError, match="limit"):
             await session.parts.used_in_sets("3001", limit=0)
+
+
+@pytest.mark.asyncio
+async def test_inventory_versions_supports_iterable_rows(
+    catalog_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_fetchall = aiosqlite.Cursor.fetchall
+
+    async def fetchall_iterator(cursor: aiosqlite.Cursor) -> Iterator[aiosqlite.Row]:
+        return iter(await original_fetchall(cursor))
+
+    async with await RebrickableSession.connect(catalog_config) as session:
+        monkeypatch.setattr(aiosqlite.Cursor, "fetchall", fetchall_iterator)
+        versions = await session.inventories.versions("100-1")
+        assert [(item.version, item.is_latest) for item in versions] == [
+            (1, False),
+            (2, True),
+        ]
+        with pytest.raises(InventoryNotFoundError):
+            await session.inventories.versions("missing-1")
 
 
 @pytest.mark.asyncio

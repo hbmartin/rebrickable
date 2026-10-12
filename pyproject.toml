@@ -18,6 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 dependencies = [
   "aiosqlite>=0.21",
@@ -47,7 +48,7 @@ dev = [
   "hypothesis>=6.130",
   "pip-audit>=2.9",
   "pyrefly>=0.55",
-  "pyroma>=5",
+  "pyroma621==6.1.0",
   "pytest>=8.4",
   "pytest-asyncio>=1.1",
   "pytest-cov>=7",

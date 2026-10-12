@@ -208,6 +208,7 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 uv sync --all-extras --all-groups
 uv run ruff check src scripts tests
 uv run ty check src/rebrickable
+uv run --locked pyroma --min 10 .
 uv run pytest
 ```
 
@@ -216,6 +217,16 @@ through markers: `-m integration` uses current Rebrickable downloads or the
 API, and `-m mutation` performs guarded user-account mutations. CI enforces
 Ruff with `select = ["ALL"]`, two type checkers, and 97% branch coverage across
 Python 3.12, 3.13, and 3.14.
+
+Package metadata must score 10/10 with
+[pyroma621](https://pypi.org/project/pyroma621/), both from the checkout and the
+built source distribution. The newer checker is pinned to 6.1.0 so upgrades
+can be reviewed for changed checks or false positives. It provides the `pyroma`
+command and Python module; install it instead of the original `pyroma`
+distribution to avoid conflicts. To get machine-readable findings, run
+`uv run --locked pyroma --format json --min 10 .`.
+Advisory findings appear in the output; add `--strict` to include them in the
+score.
 
 Contributions should include focused tests, pass the commands above, preserve
 the async-only API, and avoid network access in unit tests. Open an issue before

@@ -29,12 +29,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv sync --all-extras --all-groups --locked
+      - name: Package metadata (pyroma621)
+        run: uv run --locked pyroma --min 10 .
       - run: uv run ruff check src scripts tests
       - run: uv run ruff format --check src scripts tests
       - run: uv run ty check src/rebrickable
       - run: uv run pyrefly check src/rebrickable
       - run: uv run deptry .
-      - run: uv run pyroma --min 10 .
       - name: Tests and 97% branch coverage
         run: uv run python -m pytest --cov=rebrickable --cov-branch --cov-report=xml --cov-report=term
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -55,6 +56,8 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv build
+      - name: Source distribution metadata (pyroma621)
+        run: uv run --locked pyroma --min 10 dist/*.tar.gz
       - name: Verify wheel and sdist
         run: |
           python -m zipfile -l dist/*.whl | grep 'rebrickable/py.typed'
