@@ -50,14 +50,24 @@ def test_bom_csv_normalization_diff_and_export() -> None:
     assert bom.total_quantity == 5
     assert bom.unique_count == 1
     assert bom.duplicate_rows[0].occurrences == 2
-    other = Bom.normalize([BomItem(PartRef("ldraw", "3001"), ColorRef("ldraw", 4), 7)])
+    other = Bom.normalize(
+        [
+            BomItem(
+                part=PartRef(system="ldraw", value="3001"),
+                color=ColorRef(system="ldraw", value=4),
+                quantity=7,
+            )
+        ]
+    )
     assert bom.diff(other).rows[0].delta == 2
 
-    assert PartRef("ldraw", " 3001B.DAT ") == PartRef("ldraw", "3001b")
-    assert PartRef("rebrickable", "3001B").value == "3001B"
-    assert ColorRef("ldraw", "4") == ColorRef("ldraw", 4)
+    assert PartRef(system="ldraw", value=" 3001B.DAT ") == PartRef(
+        system="ldraw", value="3001b"
+    )
+    assert PartRef(system="rebrickable", value="3001B").value == "3001B"
+    assert ColorRef(system="ldraw", value="4") == ColorRef(system="ldraw", value=4)
     with pytest.raises(ValueError, match="integer"):
-        ColorRef("ldraw", "x")
+        ColorRef(system="ldraw", value="x")
     merged = Bom.from_csv(
         "Part,Color,Quantity\n3001B.dat,4,2\n3001b,4,3\n 3001B ,4,1\n"
     )
@@ -65,7 +75,13 @@ def test_bom_csv_normalization_diff_and_export() -> None:
     assert merged.total_quantity == 6
     assert bom.diff(Bom.from_csv("Part,Color,Quantity\n3001.DAT,4,5\n")).rows == ()
     rebrickable_bom = Bom.normalize(
-        [BomItem(PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1)],
+        [
+            BomItem(
+                part=PartRef(system="rebrickable", value="3001"),
+                color=ColorRef(system="rebrickable", value=4),
+                quantity=1,
+            )
+        ],
     )
     assert (
         rebrickable_bom.to_rebrickable_csv()
@@ -105,9 +121,9 @@ def test_rebrickable_csv_parser_and_aliases() -> None:
     )
     assert inventory.items == (
         BomItem(
-            PartRef("rebrickable", "3001"),
-            ColorRef("rebrickable", 4),
-            2,
+            part=PartRef(system="rebrickable", value="3001"),
+            color=ColorRef(system="rebrickable", value=4),
+            quantity=2,
         ),
     )
     aliased = Bom.from_rebrickable_csv("Part,Color,Qty\n3002,1,3\n")

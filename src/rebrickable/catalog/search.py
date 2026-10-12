@@ -157,13 +157,13 @@ async def search(
             matched_field, matched_value = "name", row["title"]
         hits.append(
             SearchHit(
-                SearchKind(row["kind"]),
-                row["canonical_id"],
-                row["title"],
-                row["subtitle"],
-                float(8 - rank),
-                matched_field,
-                matched_value,
+                kind=SearchKind(row["kind"]),
+                canonical_id=row["canonical_id"],
+                title=row["title"],
+                subtitle=row["subtitle"],
+                score=float(8 - rank),
+                matched_field=matched_field,
+                matched_value=matched_value,
             )
         )
-    return SearchResult(tuple(hits), total, snapshot_id)
+    return SearchResult(hits=tuple(hits), total=total, snapshot_id=snapshot_id)

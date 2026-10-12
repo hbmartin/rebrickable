@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, override
 
+type _ApiErrorValues = tuple[int | None, str, str, str, str | None, float | None]
+
 
 class RebrickableError(Exception):
     """Base class for all documented library failures."""
@@ -51,7 +53,7 @@ class CatalogImportError(RebrickableError):
     """A validated catalog could not be imported or promoted."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ApiError(RebrickableError):
     """Safe, structured details about a failed API operation."""
 
@@ -77,6 +79,42 @@ class ApiError(RebrickableError):
     def __str__(self) -> str:
         status = "transport" if self.status is None else str(self.status)
         return f"{self.operation_id} failed ({status}): {self.detail}"
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        object,
+        tuple[type[ApiError], _ApiErrorValues] | tuple[str, str, str],
+    ]:
+        return (
+            _rebuild_api_error,
+            (
+                type(self),
+                (
+                    self.status,
+                    self.path_template,
+                    self.operation_id,
+                    self.detail,
+                    self.request_id,
+                    self.retry_after,
+                ),
+            ),
+        )
+
+
+def _rebuild_api_error(
+    error_type: type[ApiError],
+    values: _ApiErrorValues,
+) -> ApiError:
+    status, path_template, operation_id, detail, request_id, retry_after = values
+    return error_type(
+        status=status,
+        path_template=path_template,
+        operation_id=operation_id,
+        detail=detail,
+        request_id=request_id,
+        retry_after=retry_after,
+    )
 
 
 class ApiAuthenticationError(ApiError):
@@ -111,8 +149,14 @@ class ApiDecodeError(ApiError):
         payload: Any | None = None,
     ) -> None:
         del payload  # Never retain or repr a potentially sensitive response.
-        super().__init__(None, path_template, operation_id, detail)
+        super().__init__(
+            status=None,
+            path_template=path_template,
+            operation_id=operation_id,
+            detail=detail,
+        )
 
+    @override
     def __reduce__(self) -> tuple[object, tuple[str, str, str]]:
         return (
             _rebuild_api_decode_error,

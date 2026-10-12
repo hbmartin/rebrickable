@@ -38,9 +38,9 @@ async def sample(args: argparse.Namespace) -> dict[str, float | int | str]:
         catalog_bom = await session.sets.bill_of_materials(owner_num)
         items = tuple(
             BomItem(
-                PartRef("rebrickable", row.part.part_num),
-                ColorRef("rebrickable", row.color.id),
-                row.quantity,
+                part=PartRef(system="rebrickable", value=row.part.part_num),
+                color=ColorRef(system="rebrickable", value=row.color.id),
+                quantity=row.quantity,
             )
             for row in catalog_bom.rows[: args.validation_rows]
         )

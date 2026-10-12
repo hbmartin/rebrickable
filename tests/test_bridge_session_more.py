@@ -110,34 +110,48 @@ async def test_resolution_translation_substitutions_and_facades(
         assert (await session.sets.require("100-1")).page_url.endswith("/100-1/")
         assert (await session.themes.require(1)).page_url.endswith("/1/")
 
-        overridden = await session.resolve_part(PartRef("ldraw", "3001"))
+        overridden = await session.resolve_part(PartRef(system="ldraw", value="3001"))
         assert overridden.source is MappingSource.USER_OVERRIDE
-        prefixed = await session.resolve_part(PartRef("ldraw", "parts\\3001.dat"))
+        prefixed = await session.resolve_part(
+            PartRef(system="ldraw", value="parts\\3001.dat")
+        )
         assert prefixed.source is MappingSource.USER_OVERRIDE
-        cached = await session.resolve_part(PartRef("ldraw", "cached-part"))
+        cached = await session.resolve_part(
+            PartRef(system="ldraw", value="cached-part")
+        )
         assert cached.target_identifier == "3002"
-        canonical = await session.resolve_part(PartRef("rebrickable", "3002"))
+        canonical = await session.resolve_part(
+            PartRef(system="rebrickable", value="3002")
+        )
         assert canonical.status is MappingStatus.RESOLVED
-        absent = await session.resolve_part(PartRef("rebrickable", "absent"))
+        absent = await session.resolve_part(
+            PartRef(system="rebrickable", value="absent")
+        )
         assert absent.status is MappingStatus.UNRESOLVED
-        external = await session.resolve_part(PartRef("bricklink", "absent"))
+        external = await session.resolve_part(
+            PartRef(system="bricklink", value="absent")
+        )
         assert external.status is MappingStatus.UNRESOLVED
 
-        override_color = await session.resolve_color(ColorRef("ldraw", 4))
+        override_color = await session.resolve_color(ColorRef(system="ldraw", value=4))
         assert override_color.target_identifier == 4
-        cached_color = await session.resolve_color(ColorRef("ldraw", 7))
+        cached_color = await session.resolve_color(ColorRef(system="ldraw", value=7))
         assert cached_color.target_identifier == 1
-        canonical_color = await session.resolve_color(ColorRef("rebrickable", 1))
+        canonical_color = await session.resolve_color(
+            ColorRef(system="rebrickable", value=1)
+        )
         assert canonical_color.target_identifier == 1
-        missing_color = await session.resolve_color(ColorRef("bricklink", 999))
+        missing_color = await session.resolve_color(
+            ColorRef(system="bricklink", value=999)
+        )
         assert missing_color.status is MappingStatus.UNRESOLVED
 
         rgb = await session.ldraw.resolve_ldraw_color(
-            LDrawColorInfo(99, "Anything", "#C91A09", 100)
+            LDrawColorInfo(code=99, name="Anything", rgb="#C91A09", alpha=100)
         )
         assert rgb.target_identifier == 4
         name = await session.ldraw.resolve_ldraw_color(
-            LDrawColorInfo(98, "Black", "FFFFFF", 255)
+            LDrawColorInfo(code=98, name="Black", rgb="FFFFFF", alpha=255)
         )
         assert name.source is MappingSource.NAME
         unknown = await session.ldraw.resolve_ldraw_color(999)
@@ -145,19 +159,25 @@ async def test_resolution_translation_substitutions_and_facades(
         assert await session.ldraw.find_ldraw_candidates("3002") == ("cached-part",)
         assert await session.ldraw.find_ldraw_color_candidates(1) == (7,)
 
-        substitutions = await session.substitutes(PartRef("rebrickable", "3001"))
+        substitutions = await session.substitutes(
+            PartRef(system="rebrickable", value="3001")
+        )
         assert substitutions[0].candidate.value == "3002"
         assert substitutions[0].path[0].value == "3001"
         with pytest.raises(ValueError, match="direction"):
-            await session.substitutes(PartRef("rebrickable", "3001"), direction="side")
+            await session.substitutes(
+                PartRef(system="rebrickable", value="3001"), direction="side"
+            )
 
-        identifiers = await session.external_ids(PartRef("rebrickable", "3002"))
+        identifiers = await session.external_ids(
+            PartRef(system="rebrickable", value="3002")
+        )
         assert identifiers[0].value == "cached-part"
         report = await session.translate_bom(
             (
-                LDrawBomItem("3001", 4, 2),
-                LDrawBomItem("cached-part", 7, 1),
-                LDrawBomItem("absent", 999, 1),
+                LDrawBomItem(part_num="3001", color_code=4, quantity=2),
+                LDrawBomItem(part_num="cached-part", color_code=7, quantity=1),
+                LDrawBomItem(part_num="absent", color_code=999, quantity=1),
             )
         )
         assert report.resolved_count == 2
@@ -199,13 +219,15 @@ async def test_override_lifecycle_optional_adapter_and_neutral_records(
         with pytest.raises(OptionalDependencyError):
             await session.ldraw.translate_model(object())
 
-    @dataclass
+    @dataclass(kw_only=True)
     class Row:
         part: str = "3001"
         colour_code: int | None = 4
         quantity: int = 2
 
-    assert LDrawBomItem.from_pyldraw_bom(Row()) == LDrawBomItem("3001", 4, 2)
+    assert LDrawBomItem.from_pyldraw_bom(Row()) == LDrawBomItem(
+        part_num="3001", color_code=4, quantity=2
+    )
     color_info = LDrawColorInfo.from_pyldraw_colour(
         type("Colour", (), {"code": 4, "name": "Red", "rgb": "C91A09", "alpha": None})()
     )
@@ -217,7 +239,7 @@ async def test_override_lifecycle_optional_adapter_and_neutral_records(
     with pytest.raises(ValueError, match="no color code"):
         LDrawBomItem.from_pyldraw_bom(Row(colour_code=None))
     with pytest.raises(ValueError, match="quantity must be positive"):
-        LDrawBomItem("3001", 4, 0)
+        LDrawBomItem(part_num="3001", color_code=4, quantity=0)
 
 
 def test_crosswalk_cache_updates_search_and_external_shape(

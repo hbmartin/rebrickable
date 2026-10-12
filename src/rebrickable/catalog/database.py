@@ -27,7 +27,7 @@ from rebrickable.types import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CatalogPaths:
     configured_database: Path
     snapshots_dir: Path
@@ -82,23 +82,23 @@ def _fingerprint(item: dict[str, Any]) -> FileFingerprint:
 async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState:
     """Classify the active snapshot.
 
-    With ``verify=False`` (the default) a structurally present snapshot is
+    With `verify=False` (the default) a structurally present snapshot is
     reported READY without opening SQLite; database corruption is detected by
-    ``open_catalog`` (which always verifies) or an explicit ``verify=True``.
+    `open_catalog` (which always verifies) or an explicit `verify=True`.
     """
     paths = CatalogPaths.from_config(config)
     snapshot_id = _read_pointer(paths)
     if snapshot_id is None:
         return CatalogState(
-            CatalogStatus.MISSING,
-            paths.configured_database,
-            paths.active_pointer,
+            status=CatalogStatus.MISSING,
+            database_path=paths.configured_database,
+            manifest_path=paths.active_pointer,
         )
     if not snapshot_id:
         return CatalogState(
-            CatalogStatus.UNREADABLE,
-            paths.configured_database,
-            paths.active_pointer,
+            status=CatalogStatus.UNREADABLE,
+            database_path=paths.configured_database,
+            manifest_path=paths.active_pointer,
             diagnostics=("active snapshot pointer is invalid",),
         )
     database = paths.database_for(snapshot_id)
@@ -115,25 +115,25 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
             else CatalogStatus.UNREADABLE
         )
         return CatalogState(
-            status,
-            database,
-            manifest_path,
+            status=status,
+            database_path=database,
+            manifest_path=manifest_path,
             snapshot_id=snapshot_id,
             diagnostics=("snapshot manifest is missing",),
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return CatalogState(
-            CatalogStatus.UNREADABLE,
-            database,
-            manifest_path,
+            status=CatalogStatus.UNREADABLE,
+            database_path=database,
+            manifest_path=manifest_path,
             snapshot_id=snapshot_id,
             diagnostics=(f"invalid manifest: {exc}",),
         )
     if schema_version != SCHEMA_VERSION:
         return CatalogState(
-            CatalogStatus.SCHEMA_MISMATCH,
-            database,
-            manifest_path,
+            status=CatalogStatus.SCHEMA_MISMATCH,
+            database_path=database,
+            manifest_path=manifest_path,
             snapshot_id=snapshot_id,
             retrieved_at=retrieved_at,
             files=files,
@@ -141,9 +141,9 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
         )
     if not database.is_file():
         return CatalogState(
-            CatalogStatus.UNREADABLE,
-            database,
-            manifest_path,
+            status=CatalogStatus.UNREADABLE,
+            database_path=database,
+            manifest_path=manifest_path,
             snapshot_id=snapshot_id,
             diagnostics=("snapshot database is missing",),
         )
@@ -157,18 +157,18 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
                     raise OSError("SQLite quick_check failed")
         except (OSError, aiosqlite.Error) as exc:
             return CatalogState(
-                CatalogStatus.UNREADABLE,
-                database,
-                manifest_path,
+                status=CatalogStatus.UNREADABLE,
+                database_path=database,
+                manifest_path=manifest_path,
                 snapshot_id=snapshot_id,
                 diagnostics=(str(exc),),
             )
     if retrieved_at.tzinfo is None:
         retrieved_at = retrieved_at.replace(tzinfo=UTC)
     return CatalogState(
-        CatalogStatus.READY,
-        database,
-        manifest_path,
+        status=CatalogStatus.READY,
+        database_path=database,
+        manifest_path=manifest_path,
         snapshot_id=snapshot_id,
         retrieved_at=retrieved_at,
         files=files,
@@ -181,8 +181,8 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
 
     Pointer resolution, verification, and connecting all hold the promotion
     lock so a concurrent refresh cannot prune the resolved snapshot; opens
-    therefore serialize and raise ``CatalogUnavailableError`` after
-    ``Config.lock_timeout`` seconds of contention.
+    therefore serialize and raise `CatalogUnavailableError` after
+    `Config.lock_timeout` seconds of contention.
     """
     paths = CatalogPaths.from_config(config)
     lock: FileLock | None = None

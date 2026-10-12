@@ -20,8 +20,13 @@ from rebrickable.bridge.models import (
     TranslationReport,
 )
 from rebrickable.errors import (
+    ApiAuthenticationError,
     ApiDecodeError,
     ApiError,
+    ApiForbiddenError,
+    ApiNotFoundError,
+    ApiServerError,
+    ApiThrottledError,
     CatalogUnavailableError,
     ConfigLoadError,
     RebrickableError,
@@ -35,6 +40,45 @@ def use_config(monkeypatch, config: Config) -> None:
     monkeypatch.setattr(Config, "load", classmethod(lambda _cls, _path=None: config))
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_retry_after", 0, "max_retry_after must be positive"),
+        ("max_retry_after", -1, "max_retry_after must be positive"),
+        ("api_key", 123, "api_key must be a string"),
+    ],
+)
+def test_config_load_rejects_invalid_retry_bound_and_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    monkeypatch.delenv("REBRICKABLE_API_KEY", raising=False)
+    target = tmp_path / "config.yml"
+    target.write_text(yaml.safe_dump({field: value}), encoding="utf-8")
+    with pytest.raises(ConfigLoadError, match=message):
+        Config.load(target)
+
+
+def test_config_load_converts_all_path_fields(tmp_path: Path) -> None:
+    target = tmp_path / "config.yml"
+    paths = {
+        "database_path": tmp_path / "data" / "catalog.sqlite",
+        "cache_path": tmp_path / "cache",
+        "mapping_overrides_path": tmp_path / "mappings.yml",
+    }
+    target.write_text(
+        yaml.safe_dump({name: str(path) for name, path in paths.items()}),
+        encoding="utf-8",
+    )
+    config = Config.load(target)
+    assert config.database_path == paths["database_path"]
+    assert config.cache_path == paths["cache_path"]
+    assert config.mapping_overrides_path == paths["mapping_overrides_path"]
+
+
 def translation_report(
     *,
     resolved: bool,
@@ -46,42 +90,42 @@ def translation_report(
     else:
         status = MappingStatus.RESOLVED if resolved else MappingStatus.UNRESOLVED
     part = PartMatch(
-        "3001",
-        "3001" if resolved else None,
-        status,
-        MappingSource.EXACT_CANONICAL_ID if resolved else MappingSource.NONE,
-        1.0 if resolved else 0.0,
-        (),
-        "fixture",
-        "fixture-snapshot",
+        source_identifier="3001",
+        target_identifier="3001" if resolved else None,
+        status=status,
+        source=MappingSource.EXACT_CANONICAL_ID if resolved else MappingSource.NONE,
+        confidence=1.0 if resolved else 0.0,
+        candidates=(),
+        explanation="fixture",
+        snapshot_id="fixture-snapshot",
     )
     color = ColorMatch(
-        4,
-        4 if resolved else None,
-        status,
-        MappingSource.USER_OVERRIDE if resolved else MappingSource.NONE,
-        1.0 if resolved else 0.0,
-        (),
-        "fixture",
-        "fixture-snapshot",
+        source_identifier=4,
+        target_identifier=4 if resolved else None,
+        status=status,
+        source=MappingSource.USER_OVERRIDE if resolved else MappingSource.NONE,
+        confidence=1.0 if resolved else 0.0,
+        candidates=(),
+        explanation="fixture",
+        snapshot_id="fixture-snapshot",
     )
     row = TranslatedBomRow(
-        "3001",
-        4,
-        part.target_identifier,
-        color.target_identifier,
-        2,
-        status,
-        part,
-        color,
+        ldraw_part_num="3001",
+        ldraw_color_code=4,
+        rebrickable_part_num=part.target_identifier,
+        rebrickable_color_id=color.target_identifier,
+        quantity=2,
+        status=status,
+        part_match=part,
+        color_match=color,
     )
     return TranslationReport(
-        (row,),
-        int(status is MappingStatus.RESOLVED),
-        int(status is MappingStatus.AMBIGUOUS),
-        int(status is MappingStatus.UNRESOLVED),
-        "fixture-snapshot",
-        diagnostics,
+        rows=(row,),
+        resolved_count=int(status is MappingStatus.RESOLVED),
+        ambiguous_count=int(status is MappingStatus.AMBIGUOUS),
+        unresolved_count=int(status is MappingStatus.UNRESOLVED),
+        snapshot_id="fixture-snapshot",
+        diagnostics=diagnostics,
     )
 
 
@@ -349,12 +393,14 @@ def test_refresh_translate_and_missing_status_cli(
 
     async def fake_refresh(self, *, force=False, progress=None):
         if progress:
-            progress(ProgressEvent(ProgressStage.DOWNLOAD, "parts", 10))
+            progress(
+                ProgressEvent(stage=ProgressStage.DOWNLOAD, dataset="parts", current=10)
+            )
         return RefreshReport(
-            RefreshOutcome.UPDATED,
-            "new-snapshot",
-            datetime(2026, 8, 1, tzinfo=UTC),
-            (),
+            outcome=RefreshOutcome.UPDATED,
+            snapshot_id="new-snapshot",
+            retrieved_at=datetime(2026, 8, 1, tzinfo=UTC),
+            files=(),
         )
 
     monkeypatch.setattr(RebrickableSession, "refresh_catalog", fake_refresh)
@@ -478,7 +524,10 @@ def test_translate_ldraw_ambiguous_json_diagnostics_and_library(
     [
         (ValueError("bad"), 2),
         (CatalogUnavailableError("missing"), 3),
-        (ApiError(401, "/path", "op", "no"), 5),
+        (
+            ApiError(status=401, path_template="/path", operation_id="op", detail="no"),
+            5,
+        ),
         (RebrickableError("library"), 1),
         (RuntimeError("boom"), 1),
     ],
@@ -562,11 +611,31 @@ def test_config_write_cleans_temporary_on_serialization_failure(
     assert not tuple(tmp_path.glob(".secrets.yml.*"))
 
 
-def test_api_error_pickle_round_trip() -> None:
-    error = ApiError(429, "/parts/", "parts", "slow down", "request", 2.0)
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        ApiError,
+        ApiAuthenticationError,
+        ApiForbiddenError,
+        ApiNotFoundError,
+        ApiThrottledError,
+        ApiServerError,
+    ],
+)
+def test_api_error_pickle_round_trip(error_type: type[ApiError]) -> None:
+    error = error_type(
+        status=429,
+        path_template="/parts/",
+        operation_id="parts",
+        detail="slow down",
+        request_id="request",
+        retry_after=2.0,
+    )
     restored = pickle.loads(pickle.dumps(error))  # noqa: S301 - trusted test value
+    assert type(restored) is error_type
     assert restored == error
     assert restored.args == error.args
+    assert restored.args == (429, "/parts/", "parts", "slow down", "request", 2.0)
     decode = ApiDecodeError(
         path_template="/parts/", operation_id="parts", detail="not JSON"
     )

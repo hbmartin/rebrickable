@@ -13,7 +13,7 @@ T = TypeVar("T")
 
 
 class ApiModel(BaseModel):
-    """Frozen DTO that preserves additive fields in immutable ``extra``."""
+    """Frozen DTO that preserves additive fields in immutable `extra`."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     extra: Mapping[str, Any] = Field(default_factory=dict)

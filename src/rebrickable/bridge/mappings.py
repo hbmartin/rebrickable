@@ -43,14 +43,14 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
     ).fetchone()
     if override:
         return PartMatch(
-            ldraw_code,
-            override[0],
-            MappingStatus.RESOLVED,
-            MappingSource.USER_OVERRIDE,
-            1.0,
-            (),
-            "explicit user override",
-            snapshot,
+            source_identifier=ldraw_code,
+            target_identifier=override[0],
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.USER_OVERRIDE,
+            confidence=1.0,
+            candidates=(),
+            explanation="explicit user override",
+            snapshot_id=snapshot,
         )
     cached = tuple(
         await (
@@ -67,30 +67,33 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
     )
     if len(cached) == 1:
         return PartMatch(
-            ldraw_code,
-            cached[0][0],
-            MappingStatus.RESOLVED,
-            MappingSource.API_EXTERNAL_ID,
-            1.0,
-            (),
-            "API-confirmed external identifier",
-            snapshot,
+            source_identifier=ldraw_code,
+            target_identifier=cached[0][0],
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=1.0,
+            candidates=(),
+            explanation="API-confirmed external identifier",
+            snapshot_id=snapshot,
         )
     if cached:
         return PartMatch(
-            ldraw_code,
-            None,
-            MappingStatus.AMBIGUOUS,
-            MappingSource.API_EXTERNAL_ID,
-            0.0,
-            tuple(
+            source_identifier=ldraw_code,
+            target_identifier=None,
+            status=MappingStatus.AMBIGUOUS,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=0.0,
+            candidates=tuple(
                 MatchCandidate(
-                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                    identifier=str(row[0]),
+                    name=None,
+                    reason="API-confirmed external identifier",
+                    confidence=1.0,
                 )
                 for row in cached
             ),
-            "multiple API-confirmed canonical identifiers",
-            snapshot,
+            explanation="multiple API-confirmed canonical identifiers",
+            snapshot_id=snapshot,
         )
     exact = await (
         await connection.execute(
@@ -99,14 +102,14 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
     ).fetchone()
     if exact:
         return PartMatch(
-            ldraw_code,
-            exact[0],
-            MappingStatus.RESOLVED,
-            MappingSource.EXACT_CANONICAL_ID,
-            0.98,
-            (),
-            "normalized identifiers are equal",
-            snapshot,
+            source_identifier=ldraw_code,
+            target_identifier=exact[0],
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.EXACT_CANONICAL_ID,
+            confidence=0.98,
+            candidates=(),
+            explanation="normalized identifiers are equal",
+            snapshot_id=snapshot,
         )
     relationships = tuple(
         await (
@@ -123,21 +126,28 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
         ).fetchall()
     )
     candidates = tuple(
-        MatchCandidate(row[0], row[1], f"relationship {row[2]}", 0.6)
+        MatchCandidate(
+            identifier=row[0],
+            name=row[1],
+            reason=f"relationship {row[2]}",
+            confidence=0.6,
+        )
         for row in relationships
     )
     status = MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED
     return PartMatch(
-        ldraw_code,
-        None,
-        status,
-        MappingSource.RELATIONSHIP_CANDIDATE if candidates else MappingSource.NONE,
-        0.0,
-        candidates,
-        "relationship candidates require review"
+        source_identifier=ldraw_code,
+        target_identifier=None,
+        status=status,
+        source=MappingSource.RELATIONSHIP_CANDIDATE
+        if candidates
+        else MappingSource.NONE,
+        confidence=0.0,
+        candidates=candidates,
+        explanation="relationship candidates require review"
         if candidates
         else "no offline mapping",
-        snapshot,
+        snapshot_id=snapshot,
     )
 
 
@@ -157,28 +167,33 @@ async def resolve_rebrickable_part(
     )
     if len(override) == 1:
         return PartMatch(
-            part_num,
-            override[0][0],
-            MappingStatus.RESOLVED,
-            MappingSource.USER_OVERRIDE,
-            1.0,
-            (),
-            "explicit user override",
-            snapshot,
+            source_identifier=part_num,
+            target_identifier=override[0][0],
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.USER_OVERRIDE,
+            confidence=1.0,
+            candidates=(),
+            explanation="explicit user override",
+            snapshot_id=snapshot,
         )
     if override:
         return PartMatch(
-            part_num,
-            None,
-            MappingStatus.AMBIGUOUS,
-            MappingSource.USER_OVERRIDE,
-            0.0,
-            tuple(
-                MatchCandidate(str(row[0]), None, "user override", 1.0)
+            source_identifier=part_num,
+            target_identifier=None,
+            status=MappingStatus.AMBIGUOUS,
+            source=MappingSource.USER_OVERRIDE,
+            confidence=0.0,
+            candidates=tuple(
+                MatchCandidate(
+                    identifier=str(row[0]),
+                    name=None,
+                    reason="user override",
+                    confidence=1.0,
+                )
                 for row in override
             ),
-            "multiple user overrides map to this part",
-            snapshot,
+            explanation="multiple user overrides map to this part",
+            snapshot_id=snapshot,
         )
     cached = tuple(
         await (
@@ -190,30 +205,33 @@ async def resolve_rebrickable_part(
     )
     if len(cached) == 1:
         return PartMatch(
-            part_num,
-            cached[0][0],
-            MappingStatus.RESOLVED,
-            MappingSource.API_EXTERNAL_ID,
-            1.0,
-            (),
-            "API-confirmed external identifier",
-            snapshot,
+            source_identifier=part_num,
+            target_identifier=cached[0][0],
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=1.0,
+            candidates=(),
+            explanation="API-confirmed external identifier",
+            snapshot_id=snapshot,
         )
     if cached:
         return PartMatch(
-            part_num,
-            None,
-            MappingStatus.AMBIGUOUS,
-            MappingSource.API_EXTERNAL_ID,
-            0.0,
-            tuple(
+            source_identifier=part_num,
+            target_identifier=None,
+            status=MappingStatus.AMBIGUOUS,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=0.0,
+            candidates=tuple(
                 MatchCandidate(
-                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                    identifier=str(row[0]),
+                    name=None,
+                    reason="API-confirmed external identifier",
+                    confidence=1.0,
                 )
                 for row in cached
             ),
-            "multiple API-confirmed external identifiers",
-            snapshot,
+            explanation="multiple API-confirmed external identifiers",
+            snapshot_id=snapshot,
         )
     exact = await (
         await connection.execute(
@@ -222,32 +240,32 @@ async def resolve_rebrickable_part(
     ).fetchone()
     if exact:
         return PartMatch(
-            part_num,
-            None,
-            MappingStatus.AMBIGUOUS,
-            MappingSource.EXACT_CANONICAL_ID,
-            0.0,
-            (
+            source_identifier=part_num,
+            target_identifier=None,
+            status=MappingStatus.AMBIGUOUS,
+            source=MappingSource.EXACT_CANONICAL_ID,
+            confidence=0.0,
+            candidates=(
                 MatchCandidate(
-                    normalize_ldraw_code(part_num),
-                    exact[1],
-                    "same-identifier heuristic; LDraw existence unverified",
-                    0.5,
+                    identifier=normalize_ldraw_code(part_num),
+                    name=exact[1],
+                    reason="same-identifier heuristic; LDraw existence unverified",
+                    confidence=0.5,
                 ),
             ),
-            "identifier exists in Rebrickable; confirm with enrich_part_mapping"
+            explanation="identifier exists in Rebrickable; confirm with enrich_part_mapping"
             " or an override",
-            snapshot,
+            snapshot_id=snapshot,
         )
     return PartMatch(
-        part_num,
-        None,
-        MappingStatus.UNRESOLVED,
-        MappingSource.NONE,
-        0.0,
-        (),
-        "no offline mapping",
-        snapshot,
+        source_identifier=part_num,
+        target_identifier=None,
+        status=MappingStatus.UNRESOLVED,
+        source=MappingSource.NONE,
+        confidence=0.0,
+        candidates=(),
+        explanation="no offline mapping",
+        snapshot_id=snapshot,
     )
 
 
@@ -266,14 +284,14 @@ async def resolve_ldraw_color(
     ).fetchone()
     if override:
         return ColorMatch(
-            code,
-            int(override[0]),
-            MappingStatus.RESOLVED,
-            MappingSource.USER_OVERRIDE,
-            1.0,
-            (),
-            "explicit user override",
-            snapshot,
+            source_identifier=code,
+            target_identifier=int(override[0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.USER_OVERRIDE,
+            confidence=1.0,
+            candidates=(),
+            explanation="explicit user override",
+            snapshot_id=snapshot,
         )
     cached = tuple(
         await (
@@ -285,41 +303,44 @@ async def resolve_ldraw_color(
     )
     if len(cached) == 1:
         return ColorMatch(
-            code,
-            int(cached[0][0]),
-            MappingStatus.RESOLVED,
-            MappingSource.API_EXTERNAL_ID,
-            1.0,
-            (),
-            "API-confirmed external identifier",
-            snapshot,
+            source_identifier=code,
+            target_identifier=int(cached[0][0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=1.0,
+            candidates=(),
+            explanation="API-confirmed external identifier",
+            snapshot_id=snapshot,
         )
     if cached:
         return ColorMatch(
-            code,
-            None,
-            MappingStatus.AMBIGUOUS,
-            MappingSource.API_EXTERNAL_ID,
-            0.0,
-            tuple(
+            source_identifier=code,
+            target_identifier=None,
+            status=MappingStatus.AMBIGUOUS,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=0.0,
+            candidates=tuple(
                 MatchCandidate(
-                    str(row[0]), None, "API-confirmed external identifier", 1.0
+                    identifier=str(row[0]),
+                    name=None,
+                    reason="API-confirmed external identifier",
+                    confidence=1.0,
                 )
                 for row in cached
             ),
-            "multiple API-confirmed canonical identifiers",
-            snapshot,
+            explanation="multiple API-confirmed canonical identifiers",
+            snapshot_id=snapshot,
         )
     if isinstance(color, int):
         return ColorMatch(
-            code,
-            None,
-            MappingStatus.UNRESOLVED,
-            MappingSource.NONE,
-            0.0,
-            (),
-            "color metadata is required for offline matching",
-            snapshot,
+            source_identifier=code,
+            target_identifier=None,
+            status=MappingStatus.UNRESOLVED,
+            source=MappingSource.NONE,
+            confidence=0.0,
+            candidates=(),
+            explanation="color metadata is required for offline matching",
+            snapshot_id=snapshot,
         )
     rgb = color.rgb.removeprefix("#").upper()
     transparent = color.alpha < 255
@@ -333,14 +354,14 @@ async def resolve_ldraw_color(
     )
     if len(rgb_rows) == 1:
         return ColorMatch(
-            code,
-            int(rgb_rows[0][0]),
-            MappingStatus.RESOLVED,
-            MappingSource.RGB,
-            0.9,
-            (),
-            "unique RGB and transparency match",
-            snapshot,
+            source_identifier=code,
+            target_identifier=int(rgb_rows[0][0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.RGB,
+            confidence=0.9,
+            candidates=(),
+            explanation="unique RGB and transparency match",
+            snapshot_id=snapshot,
         )
     name_rows = tuple(
         await (
@@ -352,32 +373,40 @@ async def resolve_ldraw_color(
     )
     if len(name_rows) == 1:
         return ColorMatch(
-            code,
-            int(name_rows[0][0]),
-            MappingStatus.RESOLVED,
-            MappingSource.NAME,
-            0.8,
-            (),
-            "unique normalized name and transparency match",
-            snapshot,
+            source_identifier=code,
+            target_identifier=int(name_rows[0][0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.NAME,
+            confidence=0.8,
+            candidates=(),
+            explanation="unique normalized name and transparency match",
+            snapshot_id=snapshot,
         )
     rows = rgb_rows or name_rows
     candidates = tuple(
-        MatchCandidate(str(row[0]), row[1], "color candidate", 0.6) for row in rows
+        MatchCandidate(
+            identifier=str(row[0]),
+            name=row[1],
+            reason="color candidate",
+            confidence=0.6,
+        )
+        for row in rows
     )
     return ColorMatch(
-        code,
-        None,
-        MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
-        MappingSource.RGB
+        source_identifier=code,
+        target_identifier=None,
+        status=MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
+        source=MappingSource.RGB
         if rgb_rows
         else MappingSource.NAME
         if name_rows
         else MappingSource.NONE,
-        0.0,
-        candidates,
-        "multiple color candidates" if candidates else "no offline color mapping",
-        snapshot,
+        confidence=0.0,
+        candidates=candidates,
+        explanation="multiple color candidates"
+        if candidates
+        else "no offline color mapping",
+        snapshot_id=snapshot,
     )
 
 
@@ -402,14 +431,14 @@ async def resolve_rebrickable_color(
     )
     if len(override) == 1:
         return ColorMatch(
-            color_id,
-            int(override[0][0]),
-            MappingStatus.RESOLVED,
-            MappingSource.USER_OVERRIDE,
-            1.0,
-            (),
-            "explicit user override",
-            snapshot,
+            source_identifier=color_id,
+            target_identifier=int(override[0][0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.USER_OVERRIDE,
+            confidence=1.0,
+            candidates=(),
+            explanation="explicit user override",
+            snapshot_id=snapshot,
         )
     cached = tuple(
         await (
@@ -425,33 +454,38 @@ async def resolve_rebrickable_color(
     )
     if len(cached) == 1:
         return ColorMatch(
-            color_id,
-            int(cached[0][0]),
-            MappingStatus.RESOLVED,
-            MappingSource.API_EXTERNAL_ID,
-            1.0,
-            (),
-            "API-confirmed external identifier",
-            snapshot,
+            source_identifier=color_id,
+            target_identifier=int(cached[0][0]),
+            status=MappingStatus.RESOLVED,
+            source=MappingSource.API_EXTERNAL_ID,
+            confidence=1.0,
+            candidates=(),
+            explanation="API-confirmed external identifier",
+            snapshot_id=snapshot,
         )
     rows = override or cached
     candidates = tuple(
-        MatchCandidate(str(row[0]), None, "confirmed LDraw color identifier", 1.0)
+        MatchCandidate(
+            identifier=str(row[0]),
+            name=None,
+            reason="confirmed LDraw color identifier",
+            confidence=1.0,
+        )
         for row in rows
     )
     return ColorMatch(
-        color_id,
-        None,
-        MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
-        MappingSource.USER_OVERRIDE
+        source_identifier=color_id,
+        target_identifier=None,
+        status=MappingStatus.AMBIGUOUS if candidates else MappingStatus.UNRESOLVED,
+        source=MappingSource.USER_OVERRIDE
         if override
         else MappingSource.API_EXTERNAL_ID
         if cached
         else MappingSource.NONE,
-        0.0,
-        candidates,
-        "multiple confirmed color identifiers"
+        confidence=0.0,
+        candidates=candidates,
+        explanation="multiple confirmed color identifiers"
         if candidates
         else "no confirmed reverse color mapping",
-        snapshot,
+        snapshot_id=snapshot,
     )

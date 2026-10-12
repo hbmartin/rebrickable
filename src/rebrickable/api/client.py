@@ -189,25 +189,25 @@ class RebrickableClient:
     ) -> ApiError:
         detail = self._redact(self._detail(response))
         request_id = response.headers.get("x-request-id")
-        values = (
-            response.status_code,
-            path_template,
-            operation_id,
-            detail,
-            request_id,
-            retry_after,
-        )
+        error_type: type[ApiError] = ApiError
         if response.status_code == 401:
-            return ApiAuthenticationError(*values)
-        if response.status_code == 403:
-            return ApiForbiddenError(*values)
-        if response.status_code == 404:
-            return ApiNotFoundError(*values)
-        if response.status_code == 429:
-            return ApiThrottledError(*values)
-        if response.status_code >= 500:
-            return ApiServerError(*values)
-        return ApiError(*values)
+            error_type = ApiAuthenticationError
+        elif response.status_code == 403:
+            error_type = ApiForbiddenError
+        elif response.status_code == 404:
+            error_type = ApiNotFoundError
+        elif response.status_code == 429:
+            error_type = ApiThrottledError
+        elif response.status_code >= 500:
+            error_type = ApiServerError
+        return error_type(
+            status=response.status_code,
+            path_template=path_template,
+            operation_id=operation_id,
+            detail=detail,
+            request_id=request_id,
+            retry_after=retry_after,
+        )
 
     async def _send(
         self,
@@ -305,7 +305,10 @@ class RebrickableClient:
             except (httpx2.TransportError, OSError) as exc:
                 if attempt + 1 >= max_attempts:
                     raise ApiError(
-                        None, operation.path, operation_id, "transport failure"
+                        status=None,
+                        path_template=operation.path,
+                        operation_id=operation_id,
+                        detail="transport failure",
                     ) from exc
                 await asyncio.sleep(min(8.0, 2**attempt + random.random()))
                 continue

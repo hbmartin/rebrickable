@@ -37,9 +37,8 @@ T = TypeVar("T")
 
 
 class _SessionProtocol(Protocol):
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    async def _connection(self) -> aiosqlite.Connection: ...
+    async def _connection(self) -> aiosqlite.Connection:
+        """Return the session's connection to its pinned catalog snapshot."""
 
 
 class Repository(Generic[T]):
@@ -109,34 +108,44 @@ class Repository(Generic[T]):
 
 
 def _part(row: aiosqlite.Row) -> Part:
-    return Part(row["part_num"], row["name"], row["part_cat_id"], row["material"])
+    return Part(
+        part_num=row["part_num"],
+        name=row["name"],
+        category_id=row["part_cat_id"],
+        material=row["material"],
+    )
 
 
 def _set(row: aiosqlite.Row) -> Set:
     return Set(
-        row["set_num"],
-        row["name"],
-        row["year"],
-        row["theme_id"],
-        row["num_parts"],
-        row["image_url"],
+        set_num=row["set_num"],
+        name=row["name"],
+        year=row["year"],
+        theme_id=row["theme_id"],
+        num_parts=row["num_parts"],
+        image_url=row["image_url"],
     )
 
 
 def _minifig(row: aiosqlite.Row) -> Minifig:
-    return Minifig(row["fig_num"], row["name"], row["num_parts"], row["image_url"])
+    return Minifig(
+        fig_num=row["fig_num"],
+        name=row["name"],
+        num_parts=row["num_parts"],
+        image_url=row["image_url"],
+    )
 
 
 def _color(row: aiosqlite.Row) -> Color:
     return Color(
-        row["id"],
-        row["name"],
-        row["rgb"],
-        bool(row["is_trans"]),
-        row["num_parts"],
-        row["num_sets"],
-        row["year_from"],
-        row["year_to"],
+        id=row["id"],
+        name=row["name"],
+        rgb=row["rgb"],
+        is_trans=bool(row["is_trans"]),
+        num_parts=row["num_parts"],
+        num_sets=row["num_sets"],
+        year_from=row["year_from"],
+        year_to=row["year_to"],
     )
 
 
@@ -189,10 +198,10 @@ class PartsRepository(Repository[Part]):
         ).fetchall()
         return tuple(
             PartRelationship(
-                RelationshipType.from_upstream(str(row["rel_type"])),
-                str(row["rel_type"]),
-                str(row["child_part_num"]),
-                str(row["parent_part_num"]),
+                type=RelationshipType.from_upstream(str(row["rel_type"])),
+                raw_type=str(row["rel_type"]),
+                child_part_num=str(row["child_part_num"]),
+                parent_part_num=str(row["parent_part_num"]),
             )
             for row in rows
         )
@@ -280,20 +289,20 @@ class PartsRepository(Repository[Part]):
         ).fetchall()
         return tuple(
             SetOccurrence(
-                _set(row),
-                Color(
-                    row["color_id"],
-                    row["color_name"],
-                    row["rgb"],
-                    bool(row["is_trans"]),
-                    row["color_num_parts"],
-                    row["color_num_sets"],
-                    row["year_from"],
-                    row["year_to"],
+                set=_set(row),
+                color=Color(
+                    id=row["color_id"],
+                    name=row["color_name"],
+                    rgb=row["rgb"],
+                    is_trans=bool(row["is_trans"]),
+                    num_parts=row["color_num_parts"],
+                    num_sets=row["color_num_sets"],
+                    year_from=row["year_from"],
+                    year_to=row["year_to"],
                 ),
-                int(row["quantity"]),
-                bool(row["is_spare"]),
-                int(row["version"]),
+                quantity=int(row["quantity"]),
+                is_spare=bool(row["is_spare"]),
+                inventory_version=int(row["version"]),
             )
             for row in rows
         )
@@ -328,14 +337,14 @@ class PartsRepository(Repository[Part]):
         if row is None:  # pragma: no cover - aggregate always yields one row
             raise RuntimeError("part usage aggregate returned no row")
         return PartUsage(
-            part,
-            int(row["total_quantity"]),
-            int(row["spare_quantity"]),
-            int(row["set_count"]),
-            int(row["inventory_count"]),
-            int(row["color_count"]),
-            row["first_year"],
-            row["last_year"],
+            part=part,
+            total_quantity=int(row["total_quantity"]),
+            spare_quantity=int(row["spare_quantity"]),
+            set_count=int(row["set_count"]),
+            inventory_count=int(row["inventory_count"]),
+            color_count=int(row["color_count"]),
+            first_year=row["first_year"],
+            last_year=row["last_year"],
         )
 
 
@@ -401,7 +410,9 @@ class ThemesRepository(Repository[Theme]):
             table="themes",
             key="id",
             order="id",
-            factory=lambda row: Theme(row["id"], row["name"], row["parent_id"]),
+            factory=lambda row: Theme(
+                id=row["id"], name=row["name"], parent_id=row["parent_id"]
+            ),
         )
 
     async def children(self, theme_id: int) -> tuple[Theme, ...]:
@@ -411,7 +422,10 @@ class ThemesRepository(Repository[Theme]):
                 "SELECT * FROM themes WHERE parent_id=? ORDER BY id", (theme_id,)
             )
         ).fetchall()
-        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
+        return tuple(
+            Theme(id=row["id"], name=row["name"], parent_id=row["parent_id"])
+            for row in rows
+        )
 
     async def parent(self, theme_id: int) -> Theme | None:
         theme = await self.require(theme_id)
@@ -420,7 +434,7 @@ class ThemesRepository(Repository[Theme]):
     async def lineage(self, theme_id: int) -> tuple[Theme, ...]:
         """Return the theme and its ancestors, outermost ancestor first.
 
-        Traversal is silently truncated at ``MAX_TRAVERSAL_DEPTH`` ancestors,
+        Traversal is silently truncated at `MAX_TRAVERSAL_DEPTH` ancestors,
         so the first element is the hierarchy root only when the chain fits
         within that bound; cyclic parent links are traversed once.
         """
@@ -435,7 +449,10 @@ class ThemesRepository(Repository[Theme]):
                 (theme_id,),
             )
         ).fetchall()
-        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
+        return tuple(
+            Theme(id=row["id"], name=row["name"], parent_id=row["parent_id"])
+            for row in rows
+        )
 
     async def descendants(self, theme_id: int) -> tuple[Theme, ...]:
         """Return all subthemes breadth-first, bounded to MAX_TRAVERSAL_DEPTH levels."""
@@ -450,7 +467,10 @@ class ThemesRepository(Repository[Theme]):
                 (theme_id,),
             )
         ).fetchall()
-        return tuple(Theme(row["id"], row["name"], row["parent_id"]) for row in rows)
+        return tuple(
+            Theme(id=row["id"], name=row["name"], parent_id=row["parent_id"])
+            for row in rows
+        )
 
 
 class ColorsRepository(Repository[Color]):
@@ -468,7 +488,7 @@ class CategoriesRepository(Repository[PartCategory]):
             table="part_categories",
             key="id",
             order="id",
-            factory=lambda row: PartCategory(row["id"], row["name"]),
+            factory=lambda row: PartCategory(id=row["id"], name=row["name"]),
         )
 
 
@@ -481,7 +501,10 @@ class ElementsRepository(Repository[Element]):
             key="element_id",
             order="element_id",
             factory=lambda row: Element(
-                row["element_id"], row["part_num"], row["color_id"], row["design_id"]
+                element_id=row["element_id"],
+                part_num=row["part_num"],
+                color_id=row["color_id"],
+                design_id=row["design_id"],
             ),
         )
 
@@ -517,10 +540,10 @@ class InventoriesRepository:
         ).fetchall()
         versions = tuple(
             InventoryVersion(
-                int(row["id"]),
-                str(row["owner_num"]),
-                int(row["version"]),
-                bool(row["is_latest"]),
+                id=int(row["id"]),
+                owner_num=str(row["owner_num"]),
+                version=int(row["version"]),
+                is_latest=bool(row["is_latest"]),
             )
             for row in rows
         )
@@ -565,7 +588,17 @@ class InventoriesRepository:
             if old[2:] != new[2:]:
                 rows.append(
                     InventoryDiffRow(
-                        record[0], record[1], old[2], new[2], old[3], new[3]
+                        part=record[0],
+                        color=record[1],
+                        before_quantity=old[2],
+                        after_quantity=new[2],
+                        before_spare_quantity=old[3],
+                        after_spare_quantity=new[3],
                     )
                 )
-        return InventoryDiff(owner_num, before.version, after.version, tuple(rows))
+        return InventoryDiff(
+            owner_num=owner_num,
+            before_version=before.version,
+            after_version=after.version,
+            rows=tuple(rows),
+        )

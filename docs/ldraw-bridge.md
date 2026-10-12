@@ -15,7 +15,7 @@ and removes only a trailing `.dat`; it preserves meaningful decoration suffixes.
 ```python
 from rebrickable import LDrawBomItem, RebrickableSession
 
-items = (LDrawBomItem("3001.dat", 4, 2),)
+items = (LDrawBomItem(part_num="3001.dat", color_code=4, quantity=2),)
 async with await RebrickableSession.open() as session:
     report = await session.translate_bom(items)
 ```
