@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 from rebrickable import cli
 from rebrickable.api.models import ApiPart, ApiUserToken
@@ -127,10 +133,106 @@ def test_api_spec_bytes_identical_between_stdout_and_output(
     assert target.read_bytes() == streamed.encode("utf-8")
 
 
-def test_broken_pipe_exits_quietly(monkeypatch, capsys) -> None:
+@pytest.fixture
+def broken_pipe_io(monkeypatch) -> tuple[Mock, Mock, Mock, Mock]:
     async def burst(_args: object) -> int:
         raise BrokenPipeError
 
+    stdout = Mock()
+    stdout.fileno.return_value = 1
+    open_descriptor = Mock(return_value=9)
+    duplicate = Mock()
+    close_descriptor = Mock()
     monkeypatch.setattr(cli, "_run", burst)
+    monkeypatch.setattr(
+        cli, "sys", SimpleNamespace(stdout=stdout, stderr=cli.sys.stderr)
+    )
+    monkeypatch.setattr(
+        cli,
+        "os",
+        SimpleNamespace(
+            devnull=os.devnull,
+            O_WRONLY=os.O_WRONLY,
+            open=open_descriptor,
+            dup2=duplicate,
+            close=close_descriptor,
+        ),
+    )
+    return stdout, open_descriptor, duplicate, close_descriptor
+
+
+@pytest.mark.parametrize(
+    ("failure", "devnull"),
+    [
+        pytest.param(None, 9, id="success"),
+        pytest.param("stdout_os_error", 9, id="stdout-os-error"),
+        pytest.param("stdout_closed", 9, id="closed-stdout"),
+        pytest.param("stdout_unsupported", 9, id="unsupported-stdout"),
+        pytest.param("open", 9, id="open-fails"),
+        pytest.param("duplicate", 9, id="duplication-fails"),
+        pytest.param("close", 9, id="close-fails"),
+        pytest.param(None, 1, id="same-descriptor"),
+    ],
+)
+def test_broken_pipe_exits_quietly(
+    broken_pipe_io: tuple[Mock, Mock, Mock, Mock],
+    capsys,
+    failure: str | None,
+    devnull: int,
+) -> None:
+    stdout, open_descriptor, duplicate, close_descriptor = broken_pipe_io
+    stdout.fileno.side_effect = {
+        "stdout_os_error": OSError,
+        "stdout_closed": ValueError,
+        "stdout_unsupported": io.UnsupportedOperation,
+    }.get(failure)
+    open_descriptor.return_value = devnull
+    open_descriptor.side_effect = OSError if failure == "open" else None
+    duplicate.side_effect = OSError if failure == "duplicate" else None
+    close_descriptor.side_effect = OSError if failure == "close" else None
+
     assert main(["url", "part", "3001"]) == 0
-    assert capsys.readouterr().err == ""
+    assert capsys.readouterr() == ("", "")
+    stdout.fileno.assert_called_once_with()
+    stdout.write.assert_not_called()
+    if failure is not None and failure.startswith("stdout_"):
+        open_descriptor.assert_not_called()
+        duplicate.assert_not_called()
+        close_descriptor.assert_not_called()
+    else:
+        open_descriptor.assert_called_once_with(os.devnull, os.O_WRONLY)
+        if failure == "open":
+            duplicate.assert_not_called()
+            close_descriptor.assert_not_called()
+        else:
+            duplicate.assert_called_once_with(devnull, 1)
+            if devnull == 1:
+                close_descriptor.assert_not_called()
+            else:
+                close_descriptor.assert_called_once_with(devnull)
+
+
+def test_repeated_broken_pipes_release_temporary_descriptors(
+    broken_pipe_io: tuple[Mock, Mock, Mock, Mock], capsys
+) -> None:
+    _, open_descriptor, duplicate, close_descriptor = broken_pipe_io
+    descriptors = iter(range(10, 20))
+    outstanding: set[int] = set()
+
+    def allocate(_path: str, _flags: int) -> int:
+        descriptor = next(descriptors)
+        outstanding.add(descriptor)
+        return descriptor
+
+    def release(descriptor: int) -> None:
+        outstanding.remove(descriptor)
+
+    open_descriptor.side_effect = allocate
+    close_descriptor.side_effect = release
+    for _ in range(10):
+        assert main(["url", "part", "3001"]) == 0
+        assert not outstanding
+    assert open_descriptor.call_count == 10
+    assert duplicate.call_count == 10
+    assert close_descriptor.call_count == 10
+    assert capsys.readouterr() == ("", "")
