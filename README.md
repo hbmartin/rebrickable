@@ -118,12 +118,15 @@ asyncio.run(main())
 ## CLI
 
 Every command prints to stdout, keeps progress and diagnostics on stderr, and
-returns a meaningful exit code (`0` ok, `2` invalid input, `3` missing data,
+returns a meaningful exit code (`0` ok, `1` unexpected/output failure,
+`2` invalid input, `3` missing data,
 `4` incomplete translation, `5` API failure).
 
 When a stdout consumer closes early, the CLI exits quietly with `0`, preserving
 any nonzero status already computed. A closed stderr drops further diagnostics
-while the command continues with stdout and its own exit status.
+while the command continues with stdout and its own exit status. Other failures
+writing or flushing command output, such as a full disk, return `1`. Help and
+version output retain `0`; usage errors retain `2`, even when output fails.
 
 | Command                 | Purpose                                             |
 | ----------------------- | --------------------------------------------------- |
@@ -264,7 +267,8 @@ Documentation deployment continues on pushes to `main`.
 Cancellation drains active imports, bridge writes, and connection workers.
 Once snapshot promotion starts, activation and pruning finish before cancellation
 propagates; see the [quickstart](https://hbmartin.github.io/rebrickable/quickstart/) for the cancellation contract.
-CodeQL centrally excludes the unused-import and ineffectual-statement queries;
+CodeQL uses the configured Python interpreter during extraction and centrally
+excludes the unused-import and ineffectual-statement queries;
 cycle and unused-global checks remain enabled, with Ruff covering unused imports.
 
 Package metadata must score 10/10 with

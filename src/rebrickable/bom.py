@@ -26,7 +26,7 @@ def _part_color_key(key: tuple[PartRef, ColorRef]) -> tuple[str, str, str, int]:
 
 
 @dataclass(frozen=True, slots=True)
-class BomItem:
+class BomItem:  # garuff: ignore[GAC009]
     part: PartRef
     color: ColorRef
     quantity: int
@@ -37,14 +37,14 @@ class BomItem:
 
 
 @dataclass(frozen=True, slots=True)
-class DuplicateBomRow:
+class DuplicateBomRow:  # garuff: ignore[GAC009]
     part: PartRef
     color: ColorRef
     occurrences: int
 
 
 @dataclass(frozen=True, slots=True)
-class BomDiffRow:
+class BomDiffRow:  # garuff: ignore[GAC009]
     part: PartRef
     color: ColorRef
     before: int
@@ -56,12 +56,12 @@ class BomDiffRow:
 
 
 @dataclass(frozen=True, slots=True)
-class BomDiff:
+class BomDiff:  # garuff: ignore[GAC009]
     rows: tuple[BomDiffRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class BomValidationRow:
+class BomValidationRow:  # garuff: ignore[GAC009]
     item: BomItem
     available: bool
     rebrickable_part: str | None
@@ -72,7 +72,7 @@ class BomValidationRow:
 
 
 @dataclass(frozen=True, slots=True)
-class BomValidationReport:
+class BomValidationReport:  # garuff: ignore[GAC009]
     rows: tuple[BomValidationRow, ...]
     total_quantity: int
     unique_count: int
@@ -82,7 +82,7 @@ class BomValidationReport:
 
 
 @dataclass(frozen=True, slots=True)
-class Bom:
+class Bom:  # garuff: ignore[GAC009]
     items: tuple[BomItem, ...]
     duplicate_rows: tuple[DuplicateBomRow, ...] = ()
 

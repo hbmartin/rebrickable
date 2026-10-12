@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from rebrickable.bridge._session import BridgeSession
+from typing import TYPE_CHECKING
+
 from rebrickable.bridge.models import (
     ColorMatch,
     LDrawColorInfo,
@@ -10,6 +11,9 @@ from rebrickable.bridge.models import (
     PartMatch,
 )
 from rebrickable.types import MappingSource, MappingStatus, normalize_ldraw_code
+
+if TYPE_CHECKING:
+    from rebrickable.bridge._session import BridgeSession
 
 __all__ = [
     "normalize_ldraw_code",

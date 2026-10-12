@@ -104,7 +104,7 @@ class ExitCode(IntEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class PartRef:
+class PartRef:  # garuff: ignore[GAC009]
     system: PartSystem
     value: str
 
@@ -119,7 +119,7 @@ class PartRef:
 
 
 @dataclass(frozen=True, slots=True)
-class ColorRef:
+class ColorRef:  # garuff: ignore[GAC009]
     system: ColorSystem
     value: int
 
@@ -137,14 +137,14 @@ class ColorRef:
 
 
 @dataclass(frozen=True, slots=True)
-class Provenance:
+class Provenance:  # garuff: ignore[GAC009]
     source: ProvenanceSource
     reference: str
     retrieved_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class FileFingerprint:
+class FileFingerprint:  # garuff: ignore[GAC009]
     dataset: str
     url: str
     etag: str | None
@@ -156,7 +156,7 @@ class FileFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogState:
+class CatalogState:  # garuff: ignore[GAC009]
     status: CatalogStatus
     database_path: Path
     manifest_path: Path
@@ -168,7 +168,7 @@ class CatalogState:
 
 
 @dataclass(frozen=True, slots=True)
-class RefreshReport:
+class RefreshReport:  # garuff: ignore[GAC009]
     outcome: RefreshOutcome
     snapshot_id: str
     retrieved_at: datetime
@@ -176,7 +176,7 @@ class RefreshReport:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchFilters:
+class SearchFilters:  # garuff: ignore[GAC009]
     year_from: int | None = None
     year_to: int | None = None
     theme_id: int | None = None
@@ -188,7 +188,7 @@ class SearchFilters:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchHit:
+class SearchHit:  # garuff: ignore[GAC009]
     kind: SearchKind
     canonical_id: str
     title: str
@@ -199,14 +199,14 @@ class SearchHit:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchResult:
+class SearchResult:  # garuff: ignore[GAC009]
     hits: tuple[SearchHit, ...]
     total: int
     snapshot_id: str
 
 
 @dataclass(frozen=True, slots=True)
-class PartColorAvailability:
+class PartColorAvailability:  # garuff: ignore[GAC009]
     available: bool
     rebrickable_part: str | None
     rebrickable_color: int | None
@@ -223,14 +223,14 @@ class PartColorAvailability:
 
 
 @dataclass(frozen=True, slots=True)
-class ExternalIdentifier:
+class ExternalIdentifier:  # garuff: ignore[GAC009]
     system: str
     value: str
     provenance: Provenance
 
 
 @dataclass(frozen=True, slots=True)
-class SubstitutionEvidence:
+class SubstitutionEvidence:  # garuff: ignore[GAC009]
     source: PartRef
     candidate: PartRef
     relationship: RelationshipType

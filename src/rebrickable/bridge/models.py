@@ -8,7 +8,7 @@ from rebrickable.types import MappingSource, MappingStatus
 
 
 @dataclass(frozen=True, slots=True)
-class LDrawBomItem:
+class LDrawBomItem:  # garuff: ignore[GAC009]
     part_num: str
     color_code: int
     quantity: int
@@ -31,7 +31,7 @@ class LDrawBomItem:
 
 
 @dataclass(frozen=True, slots=True)
-class LDrawColorInfo:
+class LDrawColorInfo:  # garuff: ignore[GAC009]
     code: int
     name: str
     rgb: str
@@ -57,7 +57,7 @@ class LDrawColorInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class MatchCandidate:
+class MatchCandidate:  # garuff: ignore[GAC009]
     identifier: str
     name: str | None
     reason: str
@@ -65,7 +65,7 @@ class MatchCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class PartMatch:
+class PartMatch:  # garuff: ignore[GAC009]
     source_identifier: str
     target_identifier: str | None
     status: MappingStatus
@@ -77,7 +77,7 @@ class PartMatch:
 
 
 @dataclass(frozen=True, slots=True)
-class ColorMatch:
+class ColorMatch:  # garuff: ignore[GAC009]
     source_identifier: int
     target_identifier: int | None
     status: MappingStatus
@@ -89,7 +89,7 @@ class ColorMatch:
 
 
 @dataclass(frozen=True, slots=True)
-class TranslatedBomRow:
+class TranslatedBomRow:  # garuff: ignore[GAC009]
     ldraw_part_num: str
     ldraw_color_code: int
     rebrickable_part_num: str | None
@@ -101,7 +101,7 @@ class TranslatedBomRow:
 
 
 @dataclass(frozen=True, slots=True)
-class TranslationReport:
+class TranslationReport:  # garuff: ignore[GAC009]
     rows: tuple[TranslatedBomRow, ...]
     resolved_count: int
     ambiguous_count: int

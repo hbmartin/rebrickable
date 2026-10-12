@@ -18,6 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _normalize_marker(marker: str) -> str:
+    return marker.strip().replace('"', "'")
+
+
 def _license_bytes(content: bytes) -> bytes:
     return content.replace(b"\r\n", b"\n")
 
@@ -103,7 +107,7 @@ def verify(directory: Path) -> Path:
             raise ValueError("invalid requirement metadata")
         value = match[1] + ",".join(sorted(match[2].split(",")))
         if separator:
-            marker = marker.strip().replace('"', "'")
+            marker = _normalize_marker(marker)
             return f"{value};{marker}"
         return value
 
@@ -121,7 +125,7 @@ def verify(directory: Path) -> Path:
         actual_extra = set()
         for requirement in wheel_metadata.get_all("Requires-Dist", []):
             value, separator, marker = requirement.partition(";")
-            if separator and marker.strip().replace('"', "'") == f"extra == '{extra}'":
+            if separator and _normalize_marker(marker) == f"extra == '{extra}'":
                 actual_extra.add(compact(value))
         if actual_extra != {compact(item) for item in requirements}:
             raise ValueError(f"extra dependencies differ from project: {extra}")

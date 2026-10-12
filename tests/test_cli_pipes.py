@@ -170,7 +170,7 @@ def test_error_diagnostics_with_broken_stderr_preserve_status(
     monkeypatch.setattr(cli, "_run", fail)
     assert cli.main(["url", "part", "3001"]) == status
     assert capsys.readouterr() == ("", "")
-    stderr.close.assert_called_once_with()
+    stderr.close.assert_not_called()
 
 
 @pytest.mark.parametrize("absent", [True, False])
@@ -186,17 +186,17 @@ def test_unavailable_streams_do_not_crash(monkeypatch, capsys, absent) -> None:
     assert capsys.readouterr() == ("", "")
 
 
-def test_descriptorless_stream_closes_without_cleanup_error() -> None:
+def test_borrowed_descriptorless_stream_remains_open() -> None:
     stream = io.StringIO("buffered data")
     cli._silence_stream(stream)
-    assert stream.closed
+    assert not stream.closed
 
 
-def test_descriptorless_buffer_closes_without_flushing() -> None:
+def test_borrowed_descriptorless_buffer_remains_open() -> None:
     stream = io.TextIOWrapper(io.BytesIO())
     stream.write("pending output")
     cli._silence_stream(stream)
-    assert stream.closed
+    assert not stream.closed
 
 
 @pytest.mark.parametrize("status", [0, 3, 4, 5])
@@ -217,7 +217,7 @@ def test_final_flush_handles_only_failed_stream(
     monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stdout, stderr=stderr))
     monkeypatch.setattr(cli, "_run", run)
     assert cli.main(["url", "part", "3001"]) == status
-    failed.close.assert_called_once_with()
+    failed.close.assert_not_called()
     healthy.close.assert_not_called()
     healthy.flush.assert_called_once_with()
 

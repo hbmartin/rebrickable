@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import pickle
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,60 @@ def test_decode_error_round_trip_discards_payload(protocol: int) -> None:
     assert restored.args == error.args
     assert not hasattr(restored, "payload")
     assert b"discarded-fixture-payload" not in payload
+
+
+@pytest.mark.parametrize("error_type", [*_ERROR_TYPES, ApiDecodeError])
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_exception_notes_preserve_fields_and_pickle(error_type, protocol) -> None:
+    error = (
+        ApiDecodeError(
+            path_template="/parts/",
+            operation_id="parts",
+            detail="invalid",
+            payload="private payload",
+        )
+        if error_type is ApiDecodeError
+        else error_type(*_VALUES)
+    )
+    original_hash = hash(error)
+    error.add_note("first context")
+    error.add_note("second context")
+    assert error.__notes__ == ["first context", "second context"]
+    with pytest.raises(FrozenInstanceError):
+        error.detail = "changed"
+    assert hash(error) == original_hash
+    payload = pickle.dumps(error, protocol)
+    restored = pickle.loads(payload)  # noqa: S301 - owned value
+    assert restored == error
+    assert restored.args == error.args
+    assert restored.__notes__ == error.__notes__
+    assert b"private payload" not in payload
+
+
+@pytest.mark.parametrize("note", [None, 1, b"bytes", ["list"]])
+def test_exception_notes_match_builtin_validation(note) -> None:
+    builtin = Exception("failure")
+    structured = ApiError(*_VALUES)
+    with pytest.raises(TypeError) as expected:
+        builtin.add_note(note)
+    with pytest.raises(TypeError) as actual:
+        structured.add_note(note)
+    assert str(actual.value) == str(expected.value)
+    assert not hasattr(structured, "__notes__")
+
+
+def test_exception_notes_reject_invalid_existing_container() -> None:
+    error = ApiError(*_VALUES)
+    object.__setattr__(error, "__notes__", "invalid")
+    with pytest.raises(TypeError, match="__notes__"):
+        error.add_note("context")
+
+
+def test_exception_state_restores_metadata_without_changing_fields() -> None:
+    error = ApiError(*_VALUES)
+    error.__setstate__(None)
+    assert not hasattr(error, "__notes__")
+    error.__setstate__({"__notes__": ["restored context"]})
+    assert error.__notes__ == ["restored context"]
+    assert error == ApiError(*_VALUES)
+    assert error.args == _VALUES

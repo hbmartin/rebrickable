@@ -249,13 +249,18 @@ def inspect_header(path: Path, definition: DatasetDefinition) -> tuple[str, ...]
 def _rows(path: Path, definition: DatasetDefinition) -> Iterator[tuple[object, ...]]:
     with gzip.open(path, mode="rt", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
-        for line_number, row in enumerate(reader, start=2):
-            try:
-                yield definition.transform(row)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise DatasetSchemaError(
-                    f"{definition.filename}:{line_number}: {exc}",
-                ) from exc
+        try:
+            for line_number, row in enumerate(reader, start=2):
+                try:
+                    yield definition.transform(row)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise DatasetSchemaError(
+                        f"{definition.filename}:{line_number}: {exc}",
+                    ) from exc
+        except (UnicodeError, csv.Error) as exc:
+            raise DatasetSchemaError(
+                f"{definition.filename}:{max(2, reader.line_num + 1)}: {exc}"
+            ) from exc
 
 
 def _batch(
@@ -370,6 +375,10 @@ def import_catalog(
         with suppress(sqlite3.Error, OSError):
             connection.execute("PRAGMA optimize")
             connection.commit()
+    except DatasetSchemaError:
+        with suppress(sqlite3.Error):
+            connection.rollback()
+        raise
     except (sqlite3.Error, OSError, EOFError, zlib.error) as exc:
         if not committed:
             connection.rollback()

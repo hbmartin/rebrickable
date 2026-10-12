@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, cast
 from filelock import FileLock
 
 from rebrickable._workers import run_in_thread
-from rebrickable.bridge._session import BridgeSession
 from rebrickable.bridge.mappings import (
     normalize_ldraw_code,
     resolve_ldraw_color,
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from rebrickable.api.client import RebrickableClient
+    from rebrickable.bridge._session import BridgeSession
     from rebrickable.config import Config
 
 _STATUS_SEVERITY = {

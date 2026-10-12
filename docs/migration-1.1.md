@@ -345,3 +345,14 @@ the desired 1.0 release, and reopen the catalog normally.
 Do not attempt to compensate for an uncertain user mutation by blindly
 replaying it after rollback. Read the current upstream list or collection state
 first, then apply a deliberate corrective mutation.
+
+## Output failures and retained snapshots
+
+An interrupted stdout pipe preserves a status selected before output, including
+validation and translation failures. Other command-output failures return `1`.
+Help/version and usage exits preserve their parser statuses. Failed diagnostics
+do not interrupt commands, and in-process CLI calls leave borrowed streams open.
+
+Private activation history now determines snapshot retention. Existing pointers
+and version-1 databases/manifests remain readable. Uncertain legacy directories
+are preserved outside the retention count; review them before manual deletion.

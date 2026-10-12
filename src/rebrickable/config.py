@@ -21,7 +21,7 @@ def default_config_file() -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class Config:
+class Config:  # garuff: ignore[GAC009]
     """Filesystem and transport settings.
 
     `api_key` may be read from YAML or `REBRICKABLE_API_KEY`. It is excluded
