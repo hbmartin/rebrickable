@@ -513,9 +513,7 @@ class InventoriesRepository:
                 (owner_num,),
             )
         ).fetchall()
-        if not rows:
-            raise InventoryNotFoundError("inventory", owner_num)
-        return tuple(
+        versions = tuple(
             InventoryVersion(
                 int(row["id"]),
                 str(row["owner_num"]),
@@ -524,6 +522,9 @@ class InventoriesRepository:
             )
             for row in rows
         )
+        if not versions:
+            raise InventoryNotFoundError("inventory", owner_num)
+        return versions
 
     async def get(self, owner_num: str, *, version: int | None = None) -> Inventory:
         return await load_inventory(
