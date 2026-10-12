@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import hashlib
 import json
 import shutil
 import sqlite3
+import zlib
+from collections.abc import AsyncIterator
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 from filelock import FileLock, Timeout
 
@@ -341,6 +346,66 @@ class StreamClient:
         if isinstance(self.response, BaseException):
             raise self.response
         return self.response
+
+
+class EncodedResponseStream(httpx2.AsyncByteStream):
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self.body
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "gzip, deflate"])
+async def test_download_bounds_compressed_response_chunks(
+    tmp_path: Path, encoding: str
+) -> None:
+    # PYSEC-2026-3846: a tiny encoded read must not inflate into one huge block.
+    payload = b"catalog-data\n" * 100_000
+    compressed = {
+        "gzip": gzip.compress(payload, mtime=0),
+        "deflate": zlib.compress(payload),
+        "gzip, deflate": zlib.compress(gzip.compress(payload, mtime=0)),
+    }[encoding]
+    stream = EncodedResponseStream(compressed)
+    url = "https://example.test/parts.csv.gz"
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        assert request.url == url
+        return httpx2.Response(
+            200, headers={"content-encoding": encoding}, stream=stream
+        )
+
+    events: list[ProgressEvent] = []
+    destination = tmp_path / "parts.csv.gz"
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(respond), follow_redirects=False
+    ) as client:
+        changed, metadata = await _download_one(
+            client,
+            url=url,
+            destination=destination,
+            previous=None,
+            force=True,
+            callback=events.append,
+        )
+
+    assert changed
+    assert destination.read_bytes() == payload
+    assert metadata["byte_length"] == len(payload)
+    assert metadata["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert stream.closed
+    previous_size = 0
+    for event in events:
+        assert event.current is not None
+        assert 0 < event.current - previous_size <= 1024 * 1024
+        previous_size = event.current
+    assert previous_size == len(payload)
 
 
 @pytest.mark.asyncio
