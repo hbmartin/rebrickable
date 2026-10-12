@@ -261,6 +261,12 @@ The manual real-catalog benchmark records five warmed samples, timing medians,
 snapshot fingerprints, and refresh/query RSS, enforcing a default 512 MiB ceiling.
 Documentation deployment continues on pushes to `main`.
 
+Cancellation drains active imports, bridge writes, and connection workers.
+Once snapshot promotion starts, activation and pruning finish before cancellation
+propagates; see the [quickstart](https://hbmartin.github.io/rebrickable/quickstart/) for the cancellation contract.
+CodeQL centrally excludes the unused-import and ineffectual-statement queries;
+cycle and unused-global checks remain enabled, with Ruff covering unused imports.
+
 Package metadata must score 10/10 with
 [pyroma621](https://pypi.org/project/pyroma621/), both from the checkout and the
 built source distribution. The newer checker is pinned to 6.1.0 so upgrades

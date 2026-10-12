@@ -37,8 +37,6 @@ T = TypeVar("T")
 
 
 class _SessionProtocol(Protocol):
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     async def _connection(self) -> aiosqlite.Connection: ...
 
 

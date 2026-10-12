@@ -5,6 +5,7 @@ import asyncio
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,52 @@ async def test_integrity_retry_and_failed_promotion_preserve_pointer(
     with pytest.raises(OSError, match="promotion"):
         await refresh_catalog(catalog_config)
     assert paths.active_pointer.read_text() == original_pointer
+    assert {child.name for child in paths.snapshots_dir.iterdir()} == {
+        "fixture-snapshot"
+    }
+
+
+@pytest.mark.parametrize("mode", ["activated", "ambiguous", "cleanup-failure"])
+async def test_promotion_failure_cleanup_never_deletes_possible_active_snapshot(
+    catalog_config: Config, monkeypatch, mode: str
+) -> None:
+    from rebrickable import refresh as module  # noqa: PLC0415 - patch target
+
+    paths = CatalogPaths.from_config(catalog_config)
+    original_pointer = paths.active_pointer.read_bytes()
+    monkeypatch.setattr(
+        module, "_download_one", downloader(snapshot_sources(catalog_config))
+    )
+
+    def fail_pointer(path: Path, payload: dict[str, Any]) -> None:
+        if path != paths.active_pointer:
+            _atomic_json(path, payload)
+            return
+        if mode == "activated":
+            _atomic_json(path, payload)
+        raise OSError("pointer durability failed")
+
+    monkeypatch.setattr(module, "_atomic_json", fail_pointer)
+    if mode == "ambiguous":
+        monkeypatch.setattr(module, "_read_pointer", lambda _paths: "")
+    if mode == "cleanup-failure":
+
+        def fail_cleanup(*args, **kwargs):
+            raise OSError("cleanup also failed")
+
+        monkeypatch.setattr(module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(OSError, match="pointer durability failed"):
+        await refresh_catalog(catalog_config)
+    assert len(tuple(paths.snapshots_dir.iterdir())) == 2
+    if mode == "activated":
+        assert paths.active_pointer.read_bytes() != original_pointer
+    else:
+        assert paths.active_pointer.read_bytes() == original_pointer
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.READY
+    with FileLock(paths.lock_file, timeout=0):
+        pass
 
 
 @pytest.mark.asyncio
@@ -240,6 +287,47 @@ async def test_snapshot_retention_keeps_prior_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_promotion_uses_current_snapshot_and_protects_it_from_orphans(
+    catalog_config: Config, monkeypatch
+) -> None:
+    config = replace(catalog_config, snapshot_retention=2)
+    paths = CatalogPaths.from_config(config)
+    previous_id = "previous-activated"
+    shutil.copytree(
+        paths.snapshots_dir / "fixture-snapshot", paths.snapshots_dir / previous_id
+    )
+    with closing(sqlite3.connect(paths.database_for(previous_id))) as connection:
+        connection.execute(
+            "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("part", "ldraw", "newly-cached", "3001", "op", "2026-08-01", "abc"),
+        )
+        connection.commit()
+    (paths.snapshots_dir / "zzzz-unactivated-orphan").mkdir()
+    acquire = FileLock.acquire
+
+    def promote_before_acquire(lock, *args, **kwargs):
+        result = acquire(lock, *args, **kwargs)
+        paths.active_pointer.write_text(json.dumps({"snapshot_id": previous_id}))
+        return result
+
+    monkeypatch.setattr(FileLock, "acquire", promote_before_acquire)
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(snapshot_sources(config))
+    )
+    report = await refresh_catalog(config)
+    monkeypatch.undo()
+    assert {child.name for child in paths.snapshots_dir.iterdir()} == {
+        previous_id,
+        report.snapshot_id,
+    }
+    with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
+        assert connection.execute(
+            "SELECT canonical_id FROM api_crosswalk_cache WHERE external_id='newly-cached'"
+        ).fetchone() == ("3001",)
+    assert (await catalog_state(config, verify=True)).snapshot_id == report.snapshot_id
+
+
+@pytest.mark.asyncio
 async def test_carry_crosswalk_drops_vanished_canonicals(
     catalog_config: Config, monkeypatch
 ) -> None:
@@ -298,7 +386,6 @@ async def test_refresh_cancellation_preserves_active_snapshot(
     async def wait_forever(*args, **kwargs):
         started.set()
         # A suspended await deliberately simulates an interrupted download.
-        # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
         await asyncio.Future()
 
     monkeypatch.setattr("rebrickable.refresh._download_one", wait_forever)

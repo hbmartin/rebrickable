@@ -11,6 +11,7 @@ import subprocess
 import sys
 from importlib import metadata, resources
 from pathlib import Path
+from unittest.mock import patch
 
 from catalog_fixture import build_catalog_config  # ty: ignore[unresolved-import]
 
@@ -78,14 +79,25 @@ def check_cli() -> None:
     assert json.loads(spec.read_text())["swagger"] == "2.0"
 
 
-if __name__ == "__main__":
-
+def _check_offline() -> Path:
     def deny_network(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("installed offline check attempted networking")
 
-    socket.create_connection = deny_network
-    socket.socket.connect = deny_network
-    package = check_installation()
-    asyncio.run(check_catalog())
-    check_cli()
+    with asyncio.Runner() as runner:
+        # Windows creates a TCP socketpair while initializing the event loop.
+        runner.get_loop()
+        with (
+            patch.object(socket, "create_connection", deny_network),
+            patch.object(socket, "getaddrinfo", deny_network),
+            patch.object(socket.socket, "connect", deny_network),
+            patch.object(socket.socket, "connect_ex", deny_network),
+        ):
+            package = check_installation()
+            runner.run(check_catalog())
+            check_cli()
+    return package
+
+
+if __name__ == "__main__":
+    package = _check_offline()
     print(f"Installed {sys.argv[1]} checks passed: {package}")

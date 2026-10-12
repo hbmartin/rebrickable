@@ -71,8 +71,6 @@ class RebrickableSession:
         self.categories = CategoriesRepository(self)
         self.elements = ElementsRepository(self)
         self.inventories = InventoriesRepository(self)
-        # The bridge references this root only under TYPE_CHECKING.
-        # codeql[py/cyclic-import]
         from rebrickable.bridge.ldraw import LDrawBridge
 
         self.ldraw = LDrawBridge(self)
@@ -114,12 +112,11 @@ class RebrickableSession:
         return state
 
     async def close(self) -> None:
-        if self._db is not None:
-            try:
-                await settle(self._db.close())
-            finally:
-                self._db = None
-                self._opened_state = None
+        async with self._open_lock:
+            connection, self._db = self._db, None
+            self._opened_state = None
+            if connection is not None:
+                await settle(connection.close())
 
     async def state(self, *, verify: bool = False) -> CatalogState:
         """Return the currently active catalog state, which may differ when pinned."""

@@ -18,10 +18,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _license_bytes(content: bytes) -> bytes:
+    return content.replace(b"\r\n", b"\n")
+
+
 def verify(directory: Path) -> Path:
     (wheel,) = directory.glob("*.whl")
     (sdist,) = directory.glob("*.tar.gz")
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    project_license = _license_bytes((ROOT / "LICENSE.txt").read_bytes())
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         (metadata_name,) = (
@@ -35,7 +40,7 @@ def verify(directory: Path) -> Path:
         licenses = [name for name in names if name.endswith("/licenses/LICENSE.txt")]
         if (
             len(licenses) != 1
-            or archive.read(licenses[0]) != (ROOT / "LICENSE.txt").read_bytes()
+            or _license_bytes(archive.read(licenses[0])) != project_license
         ):
             raise ValueError("wheel license is missing or differs from project")
         if not any(
@@ -46,8 +51,16 @@ def verify(directory: Path) -> Path:
             raise ValueError("wheel lacks vendored OpenAPI resource")
     with tarfile.open(sdist) as archive:
         names = archive.getnames()
+        licenses = [name for name in names if name.endswith("/LICENSE.txt")]
+        if len(licenses) != 1:
+            raise ValueError("sdist license is missing or duplicated")
+        handle = archive.extractfile(licenses[0])
+        if handle is None:
+            raise ValueError("sdist license is unreadable")
+        with handle:
+            if _license_bytes(handle.read()) != project_license:
+                raise ValueError("sdist license differs from project")
         for suffix in (
-            "/LICENSE.txt",
             "/docs/api.md",
             "/tests/test_catalog_session.py",
             "/scripts/generate_openapi.py",

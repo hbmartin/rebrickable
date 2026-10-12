@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import sqlite3
 from collections.abc import Iterable, Mapping
-
-# Any is used by the quoted cast contracts below.
-# codeql[py/unused-import]
 from typing import TYPE_CHECKING, Any, cast
 
 from filelock import FileLock
 
+from rebrickable._workers import run_in_thread
 from rebrickable.bridge._session import BridgeSession
 from rebrickable.bridge.mappings import (
     normalize_ldraw_code,
@@ -84,7 +81,7 @@ class LDrawBridge:
 
         dto = await client.get_part(part_num, inc_part_details=True)
         values = _external_values(dto.external_ids, "ldraw")
-        await asyncio.to_thread(
+        await run_in_thread(
             store_crosswalks,
             self._session.config,
             entity_kind="part",
@@ -104,7 +101,7 @@ class LDrawBridge:
 
         dto = await client.get_color(color_id)
         values = _external_values(dto.external_ids, "ldraw")
-        await asyncio.to_thread(
+        await run_in_thread(
             store_crosswalks,
             self._session.config,
             entity_kind="color",
@@ -236,7 +233,7 @@ class LDrawBridge:
         override_path = self._session.config.mapping_overrides_path
         if override_path is None:
             raise ValueError("mapping_overrides_path is not configured")
-        await asyncio.to_thread(
+        await run_in_thread(
             _persist_override,
             path=override_path,
             config=self._session.config,
@@ -270,7 +267,7 @@ class LDrawBridge:
         override_path = self._session.config.mapping_overrides_path
         if override_path is None:
             raise ValueError("mapping_overrides_path is not configured")
-        await asyncio.to_thread(
+        await run_in_thread(
             _delete_override,
             path=override_path,
             config=self._session.config,
@@ -310,7 +307,7 @@ def _external_values(external_ids: object, system: str) -> tuple[str, ...]:
             values = values.get("ext_ids", values.get("ids", ()))
         if isinstance(values, str | int):
             values = (values,)
-        if isinstance(values, (list, tuple)):
+        if isinstance(values, list | tuple):  # pyrefly: ignore[implicit-any-type-argument]
             return tuple(sorted({str(value) for value in values}))
     return ()
 

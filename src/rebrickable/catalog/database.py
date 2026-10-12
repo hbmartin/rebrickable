@@ -149,12 +149,14 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
         )
     if verify:
         try:
-            async with aiosqlite.connect(
-                _read_only_uri(database), uri=True
-            ) as connection:
+            connection = aiosqlite.connect(_read_only_uri(database), uri=True)
+            try:
+                await settle(connection)
                 row = await (await connection.execute("PRAGMA quick_check")).fetchone()
                 if row is None or row[0] != "ok":
                     raise OSError("SQLite quick_check failed")
+            finally:
+                await settle(connection.close())
         except (OSError, aiosqlite.Error) as exc:
             return CatalogState(
                 CatalogStatus.UNREADABLE,

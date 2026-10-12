@@ -14,7 +14,7 @@ from scripts import check_distributions
 def distribution_factory(tmp_path: Path, monkeypatch):
     root = tmp_path / "project"
     root.mkdir()
-    (root / "LICENSE.txt").write_text("fixture license")
+    (root / "LICENSE.txt").write_bytes(b"fixture license\nsecond line\n")
     (root / "pyproject.toml").write_text(
         """\
 [project]
@@ -33,7 +33,12 @@ ldraw = ["requests>=2.33.0"]
     directory = tmp_path / "dist"
     directory.mkdir()
 
-    def build(requirements: list[str]) -> Path:
+    def build(
+        requirements: list[str],
+        *,
+        wheel_licenses: tuple[bytes, ...] = (b"fixture license\nsecond line\n",),
+        sdist_licenses: tuple[bytes, ...] = (b"fixture license\nsecond line\n",),
+    ) -> Path:
         metadata = "\n".join(
             [
                 "Metadata-Version: 2.4",
@@ -51,17 +56,23 @@ ldraw = ["requests>=2.33.0"]
             archive.writestr("rebrickable/py.typed", "")
             archive.writestr("rebrickable/data/rebrickable-openapi-fixture.json", "{}")
             archive.writestr("rebrickable.dist-info/METADATA", metadata)
-            archive.writestr(
-                "rebrickable.dist-info/licenses/LICENSE.txt", "fixture license"
-            )
+            for index, content in enumerate(wheel_licenses):
+                archive.writestr(
+                    f"rebrickable{index}.dist-info/licenses/LICENSE.txt", content
+                )
         with tarfile.open(directory / "rebrickable.tar.gz", "w:gz") as archive:
             files = {
-                "LICENSE.txt": b"fixture license",
                 "docs/api.md": b"",
                 "tests/test_catalog_session.py": b"",
                 "scripts/generate_openapi.py": b"",
                 "PKG-INFO": metadata,
             }
+            files.update(
+                {
+                    f"licenses{index}/LICENSE.txt": content
+                    for index, content in enumerate(sdist_licenses)
+                }
+            )
             for name, data in files.items():
                 member = tarfile.TarInfo(f"rebrickable/{name}")
                 member.size = len(data)
@@ -113,3 +124,38 @@ def test_weaker_extra_floor_fails(distribution_factory) -> None:
     )
     with pytest.raises(ValueError, match="extra dependencies differ"):
         check_distributions.verify(directory)
+
+
+REQUIREMENTS = [
+    "filelock>=3.20.3",
+    "anyio>=4.14.2; sys_platform != 'emscripten'",
+    "requests>=2.33.0; extra == 'ldraw'",
+]
+
+
+@pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"])
+def test_checkout_and_distribution_license_line_endings(
+    distribution_factory, line_ending: bytes
+) -> None:
+    check_distributions.ROOT.joinpath("LICENSE.txt").write_bytes(
+        b"fixture license\nsecond line\n".replace(b"\n", line_ending)
+    )
+    directory = distribution_factory(
+        REQUIREMENTS,
+        sdist_licenses=(b"fixture license\r\nsecond line\r\n",),
+    )
+    check_distributions.verify(directory)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    "licenses",
+    [(), (b"changed content",), (b"fixture license\nsecond line",), (b"one", b"two")],
+)
+def test_missing_changed_or_duplicate_license_fails(
+    distribution_factory, artifact: str, licenses: tuple[bytes, ...]
+) -> None:
+    with pytest.raises(ValueError, match=f"{artifact} license"):
+        check_distributions.verify(
+            distribution_factory(REQUIREMENTS, **{f"{artifact}_licenses": licenses})
+        )

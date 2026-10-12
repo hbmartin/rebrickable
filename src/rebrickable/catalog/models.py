@@ -194,13 +194,9 @@ class InventoryDiff(Sequence[InventoryDiffRow]):
         return len(self.rows)
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> InventoryDiffRow: ...
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[InventoryDiffRow, ...]: ...
 
     @override
@@ -249,13 +245,9 @@ class CatalogBom(Sequence[BomRow]):
         return len(self.rows)
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> BomRow: ...
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[BomRow, ...]: ...
 
     @override

@@ -249,6 +249,15 @@ State methods now distinguish two questions:
 A refresh can advance the active pointer. Long-running readers should use the
 opened state when recording provenance for results from their pinned session.
 
+Cancellation drains active imports, filesystem operations, bridge writes, and
+SQLite connection workers before releasing their resources. Before the promotion
+worker starts, cancelling a refresh preserves the previous active snapshot.
+After that worker starts, promotion finishes activation and pruning before
+raising `CancelledError`. A cancelled refresh can therefore activate a new
+complete snapshot; use `current_catalog_state()` to determine the active state.
+Concurrent session closes are idempotent, and reopening waits for closure to
+finish.
+
 ## BOM validation performance
 
 `validate_bom()` now resolves the input rows first and batches part/color

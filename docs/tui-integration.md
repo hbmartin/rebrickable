@@ -15,8 +15,12 @@ async with await RebrickableSession.open() as session:
 For first-run or user-requested refresh, pass a short non-blocking progress
 callback to `session.refresh()`. The callback receives frozen `ProgressEvent`
 values on the event-loop thread; it should enqueue UI updates and return quickly.
-Cancellation is normal async task cancellation and never changes the active
-snapshot.
+Cancellation waits for active resource-owning workers to finish. Before the
+promotion worker starts, cancellation preserves the previous active snapshot.
+Once promotion starts, it completes activation and pruning before propagating
+`CancelledError`, so a cancelled refresh can leave a new complete snapshot
+active. Read `session.state()` after cancellation to determine the active
+snapshot; an already opened session remains pinned to its existing snapshot.
 
 Entity links come from `page_url` or the pure URL builders. Open Rebrickable page
 links, not image metadata. Set and minifigure views use `inventory()` for the

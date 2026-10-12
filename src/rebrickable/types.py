@@ -246,6 +246,6 @@ def freeze_json(value: Any) -> Any:
     """Recursively freeze JSON-compatible data for immutable DTO extras."""
     if isinstance(value, dict):
         return MappingProxyType({str(k): freeze_json(v) for k, v in value.items()})
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):  # pyrefly: ignore[implicit-any-type-argument]
         return tuple(freeze_json(item) for item in value)
     return value

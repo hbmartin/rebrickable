@@ -15,11 +15,15 @@ cross-file references, FTS, row counts, and SQLite integrity pass. A transient
 mixed CDN generation is downloaded once more after a bounded delay; a second
 failure leaves the old snapshot active.
 
-Cancellation waits for active import, filesystem, and connection workers to
-finish before releasing their resources. Cancellation before pointer promotion
-keeps the previous snapshot active; after promotion, the new complete snapshot
-remains readable. Cancelled session cleanup closes the connection and clears its
-pinned state, so a later explicit catalog operation can open a new connection.
+Cancellation waits for active imports, filesystem operations, bridge writes,
+and connection workers to finish before releasing their resources. An import
+can finish in full, and a contended lock can wait until `Config.lock_timeout`.
+Cancellation before the promotion worker starts keeps the previous snapshot
+active. Once that worker starts, it finishes installing the snapshot, activating
+the pointer, and pruning before raising `CancelledError`; the new complete
+snapshot remains readable. Cancelled session cleanup closes the connection and
+clears its pinned state, so a later explicit catalog operation can open a new
+connection.
 
 ```python
 from rebrickable import RebrickableSession, SearchKind
