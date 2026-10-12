@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ from filelock import FileLock, Timeout
 from rebrickable._atomic import durable_replace
 from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
-from rebrickable.catalog.database import CatalogPaths, catalog_state
+from rebrickable.catalog.database import CatalogPaths, _read_pointer, catalog_state
 from rebrickable.catalog.importers import DATASETS, import_catalog, inspect_header
 from rebrickable.catalog.schema import SCHEMA_VERSION
 from rebrickable.config import Config
@@ -77,7 +78,7 @@ async def _download_one(
     force: bool,
     callback: ProgressCallback | None,
 ) -> tuple[bool, dict[str, Any]]:
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"Accept-Encoding": "identity"}
     if not force and previous is not None:
         if previous.etag:
             headers["If-None-Match"] = previous.etag
@@ -95,7 +96,9 @@ async def _download_one(
             digest = hashlib.sha256()
             length = 0
             with destination.open("wb") as handle:
-                async for block in response.aiter_bytes():
+                # Catalog objects are gzip archives, including when mislabeled
+                # with Content-Encoding. Preserve the archive bytes verbatim.
+                async for block in response.aiter_raw():
                     handle.write(block)
                     digest.update(block)
                     length += len(block)
@@ -167,7 +170,9 @@ def _snapshot_name(path: Path) -> str:
     return path.name
 
 
-def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
+def _prune_snapshots(
+    paths: CatalogPaths, active_id: str, retain: int, *, previous_id: str | None = None
+) -> None:
     """Remove superseded snapshots and orphaned partial transfers."""
     try:
         children = tuple(paths.snapshots_dir.iterdir())
@@ -179,6 +184,8 @@ def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
         reverse=True,
     )
     keep = {active_id}
+    if retain > 1 and previous_id is not None:
+        keep.add(previous_id)
     for child in named:
         if child.name.startswith("."):
             continue
@@ -192,6 +199,33 @@ def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
             shutil.rmtree(child)
         except OSError:
             continue
+
+
+def _promote_snapshot(
+    paths: CatalogPaths,
+    *,
+    staging: Path,
+    incoming: Path,
+    destination: Path,
+    previous_id: str | None,
+    retain: int,
+) -> None:
+    """Complete promotion while the caller owns and drains the promotion lock."""
+    try:
+        previous = paths.database_for(previous_id) if previous_id is not None else None
+        _carry_crosswalk(previous, staging / paths.configured_database.name)
+        shutil.move(staging, incoming)
+        durable_replace(incoming, destination)
+        _atomic_json(paths.active_pointer, {"snapshot_id": destination.name})
+        _prune_snapshots(paths, destination.name, retain, previous_id=previous_id)
+    except BaseException:
+        # A durable pointer replacement can succeed before a later fsync fails.
+        # Remove the candidate only if the pointer proves it is inactive.
+        active_id = _read_pointer(paths)
+        if active_id not in {"", destination.name}:
+            with suppress(OSError):
+                shutil.rmtree(destination)
+        raise
 
 
 def _prune_abandoned_staging(cache_path: Path) -> None:
@@ -361,17 +395,20 @@ async def _refresh_attempt(
                 "another process holds the catalog promotion lock"
             ) from exc
         try:
-            previous_database = (
-                paths.database_for(prior_state.snapshot_id)
-                if prior_state.status is CatalogStatus.READY and prior_state.snapshot_id
+            current_state = await catalog_state(config, verify=True)
+            previous_id = (
+                current_state.snapshot_id
+                if current_state.status is CatalogStatus.READY
                 else None
             )
-            await run_in_thread(_carry_crosswalk, previous_database, database)
-            await run_in_thread(shutil.move, staging, incoming)
-            await run_in_thread(durable_replace, incoming, destination)
-            _atomic_json(paths.active_pointer, {"snapshot_id": snapshot_id})
             await run_in_thread(
-                _prune_snapshots, paths, snapshot_id, config.snapshot_retention
+                _promote_snapshot,
+                paths,
+                staging=staging,
+                incoming=incoming,
+                destination=destination,
+                previous_id=previous_id,
+                retain=config.snapshot_retention,
             )
         finally:
             lock.release()

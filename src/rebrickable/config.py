@@ -20,7 +20,7 @@ def default_config_file() -> Path:
     return get_config_dir() / "config.yml"
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Config:
     """Filesystem and transport settings.
 

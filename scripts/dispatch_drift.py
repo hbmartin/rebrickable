@@ -23,21 +23,18 @@ def publish_drift(base_sha: str, branch: str) -> None:
         "src/rebrickable/api/operation_registry.py",
         "src/rebrickable/api/query_types.py",
     )
-    patch = command("git", "diff", "--cached", "--binary")
+    patch = subprocess.check_output(["git", "diff", "--cached", "--binary"])
     if not patch:
         print("No upstream API drift")
         return
     with tempfile.TemporaryDirectory(prefix="openapi-drift-") as directory:
         patch_file = Path(directory) / "openapi.patch"
-        patch_file.write_text(patch, encoding="utf-8")
+        patch_file.write_bytes(patch)
         command("git", "reset")
         existing = command("git", "ls-remote", "--heads", "origin", branch)
         if existing:
             command("git", "fetch", "origin", f"{branch}:refs/remotes/origin/{branch}")
-            command("git", "switch", "-C", branch, f"origin/{branch}")
-        else:
-            command("git", "switch", "-c", branch)
-        command("git", "reset", "--hard", base_sha)
+        command("git", "switch", "-f", "-C", branch, base_sha)
         command("git", "clean", "-fd", "src/rebrickable/data")
         command("git", "apply", "--index", str(patch_file))
     command("git", "config", "user.name", "github-actions")

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -48,10 +50,13 @@ async def test_quick_check_failure(
     catalog_config: Config, monkeypatch: pytest.MonkeyPatch, row: object
 ) -> None:
     class Connection:
-        async def __aenter__(self) -> Connection:
-            return self
+        def __await__(self) -> Generator[Any, None, Connection]:
+            async def connect() -> Connection:
+                return self
 
-        async def __aexit__(self, *_args: object) -> None:
+            return connect().__await__()
+
+        async def close(self) -> None:
             pass
 
         async def execute(self, _sql: str) -> Connection:

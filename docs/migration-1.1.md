@@ -33,6 +33,13 @@ python -m pip uninstall pyrebrickable
 Do not remove an application-data catalog during the package upgrade. Version
 1.1 deliberately reads the version 1 database and manifest produced by 1.0.
 
+Catalog refresh requests `Accept-Encoding: identity` and saves the gzip archive
+bytes exactly, including when a server labels the archive with
+`Content-Encoding: gzip`. Custom `downloads_base_url` servers must return the
+gzip CSV archive directly. An additional transport-compression layer is not
+decoded and fails catalog validation; the previous active snapshot remains
+usable. Existing snapshots and their fingerprints do not require migration.
+
 ## Compatibility summary
 
 | Area | 1.0 behavior | 1.1 behavior | Action |
@@ -242,6 +249,15 @@ State methods now distinguish two questions:
 A refresh can advance the active pointer. Long-running readers should use the
 opened state when recording provenance for results from their pinned session.
 
+Cancellation drains active imports, filesystem operations, bridge writes, and
+SQLite connection workers before releasing their resources. Before the promotion
+worker starts, cancelling a refresh preserves the previous active snapshot.
+After that worker starts, promotion finishes activation and pruning before
+raising `CancelledError`. A cancelled refresh can therefore activate a new
+complete snapshot; use `current_catalog_state()` to determine the active state.
+Concurrent session closes are idempotent, and reopening waits for closure to
+finish.
+
 ## BOM validation performance
 
 `validate_bom()` now resolves the input rows first and batches part/color
@@ -289,6 +305,10 @@ snapshot database. Open that path read-only and do not modify package-managed
 snapshots.
 
 ## Public imports and packaging
+
+Public dataclass constructors continue to accept positional and named arguments.
+Existing positional class patterns and saved structured API exceptions remain
+compatible; no constructor migration is required.
 
 Mutation request models and `MutationResult` are now importable directly from
 `rebrickable`, as are the new catalog analytics and inventory-history models.

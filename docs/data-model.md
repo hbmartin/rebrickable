@@ -1,8 +1,9 @@
 # Offline catalog and domain model
 
-Every domain result is an immutable, slotted dataclass with keyword-only
-construction. Identifiers with possible
-leading zeroes remain strings. Repository facades expose stable `get`, `require`,
+Every domain result is an immutable, slotted dataclass. Public records support
+existing positional constructors and named arguments, for example
+`PartRef("ldraw", "99780")` and `PartRef(system="ldraw", value="99780")`.
+Identifiers with possible leading zeroes remain strings. Repository facades expose stable `get`, `require`,
 `count`, bounded `list`, and paged asynchronous `iter` methods for parts, sets,
 minifigures, colors, themes, categories, and elements. Required lookups raise
 `EntityNotFoundError`.

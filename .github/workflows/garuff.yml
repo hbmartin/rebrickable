@@ -27,6 +27,8 @@ jobs:
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-suffix: garuff
       - name: Run pinned garuff and record results
         shell: bash
         env:
@@ -43,8 +45,7 @@ jobs:
           printf '%s\n' "$garuff_status" > garuff-report/exit-code.txt
           case "$garuff_status" in
             0) result='No findings.' ;;
-            1) result='Findings or parse/suppression errors; review the report.' ;;
-            *) result='Tool, installation, or configuration failure; review the report.' ;;
+            *) result='Findings, parse/suppression errors, or tool failure; review the report.' ;;
           esac
           {
             printf '## Garuff (advisory)\n\n'

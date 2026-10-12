@@ -2,23 +2,22 @@
 from __future__ import annotations
 
 import asyncio
-import gzip
-import hashlib
 import json
 import os
 import shutil
 import sqlite3
-import zlib
-from collections.abc import AsyncIterator
+import time
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-import httpx2
 import pytest
 from filelock import FileLock, Timeout
 
 from rebrickable import CatalogStatus, Config, RebrickableSession, RefreshOutcome
+from rebrickable import refresh as refresh_module
 from rebrickable.catalog.database import CatalogPaths, catalog_state
 from rebrickable.errors import CatalogImportError, DatasetIntegrityError, DownloadError
 from rebrickable.progress import ProgressEvent, ProgressStage
@@ -138,6 +137,52 @@ async def test_integrity_retry_and_failed_promotion_preserve_pointer(
     with pytest.raises(OSError, match="promotion"):
         await refresh_catalog(catalog_config)
     assert paths.active_pointer.read_text() == original_pointer
+    assert {child.name for child in paths.snapshots_dir.iterdir()} == {
+        "fixture-snapshot"
+    }
+
+
+@pytest.mark.parametrize("mode", ["activated", "ambiguous", "cleanup-failure"])
+async def test_promotion_failure_cleanup_never_deletes_possible_active_snapshot(
+    catalog_config: Config, monkeypatch, mode: str
+) -> None:
+    from rebrickable import refresh as module  # noqa: PLC0415 - patch target
+
+    paths = CatalogPaths.from_config(catalog_config)
+    original_pointer = paths.active_pointer.read_bytes()
+    monkeypatch.setattr(
+        module, "_download_one", downloader(snapshot_sources(catalog_config))
+    )
+
+    def fail_pointer(path: Path, payload: dict[str, Any]) -> None:
+        if path != paths.active_pointer:
+            _atomic_json(path, payload)
+            return
+        if mode == "activated":
+            _atomic_json(path, payload)
+        raise OSError("pointer durability failed")
+
+    monkeypatch.setattr(module, "_atomic_json", fail_pointer)
+    if mode == "ambiguous":
+        monkeypatch.setattr(module, "_read_pointer", lambda _paths: "")
+    if mode == "cleanup-failure":
+
+        def fail_cleanup(*args, **kwargs):
+            raise OSError("cleanup also failed")
+
+        monkeypatch.setattr(module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(OSError, match="pointer durability failed"):
+        await refresh_catalog(catalog_config)
+    assert len(tuple(paths.snapshots_dir.iterdir())) == 2
+    if mode == "activated":
+        assert paths.active_pointer.read_bytes() != original_pointer
+    else:
+        assert paths.active_pointer.read_bytes() == original_pointer
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.READY
+    with FileLock(paths.lock_file, timeout=0):
+        pass
 
 
 @pytest.mark.asyncio
@@ -252,6 +297,47 @@ async def test_snapshot_retention_keeps_prior_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_promotion_uses_current_snapshot_and_protects_it_from_orphans(
+    catalog_config: Config, monkeypatch
+) -> None:
+    config = replace(catalog_config, snapshot_retention=2)
+    paths = CatalogPaths.from_config(config)
+    previous_id = "previous-activated"
+    shutil.copytree(
+        paths.snapshots_dir / "fixture-snapshot", paths.snapshots_dir / previous_id
+    )
+    with closing(sqlite3.connect(paths.database_for(previous_id))) as connection:
+        connection.execute(
+            "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("part", "ldraw", "newly-cached", "3001", "op", "2026-08-01", "abc"),
+        )
+        connection.commit()
+    (paths.snapshots_dir / "zzzz-unactivated-orphan").mkdir()
+    acquire = FileLock.acquire
+
+    def promote_before_acquire(lock, *args, **kwargs):
+        result = acquire(lock, *args, **kwargs)
+        paths.active_pointer.write_text(json.dumps({"snapshot_id": previous_id}))
+        return result
+
+    monkeypatch.setattr(FileLock, "acquire", promote_before_acquire)
+    monkeypatch.setattr(
+        "rebrickable.refresh._download_one", downloader(snapshot_sources(config))
+    )
+    report = await refresh_catalog(config)
+    monkeypatch.undo()
+    assert {child.name for child in paths.snapshots_dir.iterdir()} == {
+        previous_id,
+        report.snapshot_id,
+    }
+    with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
+        assert connection.execute(
+            "SELECT canonical_id FROM api_crosswalk_cache WHERE external_id='newly-cached'"
+        ).fetchone() == ("3001",)
+    assert (await catalog_state(config, verify=True)).snapshot_id == report.snapshot_id
+
+
+@pytest.mark.asyncio
 async def test_carry_crosswalk_drops_vanished_canonicals(
     catalog_config: Config, monkeypatch
 ) -> None:
@@ -310,7 +396,6 @@ async def test_refresh_cancellation_preserves_active_snapshot(
     async def wait_forever(*args, **kwargs):
         started.set()
         # A suspended await deliberately simulates an interrupted download.
-        # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
         await asyncio.Future()
 
     monkeypatch.setattr("rebrickable.refresh._download_one", wait_forever)
@@ -339,7 +424,7 @@ class StreamResponse:
         if self.status_code >= 400:
             raise OSError("bad response")
 
-    async def aiter_bytes(self):
+    async def aiter_raw(self):
         for chunk in self._chunks:
             yield chunk
 
@@ -355,66 +440,6 @@ class StreamClient:
         if isinstance(self.response, BaseException):
             raise self.response
         return self.response
-
-
-class EncodedResponseStream(httpx2.AsyncByteStream):
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-        self.closed = False
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        yield self.body
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("encoding", ["gzip", "deflate", "gzip, deflate"])
-async def test_download_bounds_compressed_response_chunks(
-    tmp_path: Path, encoding: str
-) -> None:
-    # PYSEC-2026-3846: a tiny encoded read must not inflate into one huge block.
-    payload = b"catalog-data\n" * 100_000
-    compressed = {
-        "gzip": gzip.compress(payload, mtime=0),
-        "deflate": zlib.compress(payload),
-        "gzip, deflate": zlib.compress(gzip.compress(payload, mtime=0)),
-    }[encoding]
-    stream = EncodedResponseStream(compressed)
-    url = "https://example.test/parts.csv.gz"
-
-    def respond(request: httpx2.Request) -> httpx2.Response:
-        assert request.url == url
-        return httpx2.Response(
-            200, headers={"content-encoding": encoding}, stream=stream
-        )
-
-    events: list[ProgressEvent] = []
-    destination = tmp_path / "parts.csv.gz"
-    async with httpx2.AsyncClient(
-        transport=httpx2.MockTransport(respond), follow_redirects=False
-    ) as client:
-        changed, metadata = await _download_one(
-            client,
-            url=url,
-            destination=destination,
-            previous=None,
-            force=True,
-            callback=events.append,
-        )
-
-    assert changed
-    assert destination.read_bytes() == payload
-    assert metadata["byte_length"] == len(payload)
-    assert metadata["sha256"] == hashlib.sha256(payload).hexdigest()
-    assert stream.closed
-    previous_size = 0
-    for event in events:
-        assert event.current is not None
-        assert 0 < event.current - previous_size <= 1024 * 1024
-        previous_size = event.current
-    assert previous_size == len(payload)
 
 
 @pytest.mark.asyncio
@@ -528,11 +553,12 @@ async def test_downloader_revalidation_headers_and_forced_download(
 
     assert changed is force
     if force:
-        assert client.headers == {}
+        assert client.headers == {"Accept-Encoding": "identity"}
         assert destination.read_bytes() == b"new data"
         assert metadata["byte_length"] == 8
     else:
         assert client.headers == {
+            "Accept-Encoding": "identity",
             "If-None-Match": previous.etag,
             "If-Modified-Since": previous.last_modified,
         }
@@ -544,7 +570,9 @@ def test_staging_cleanup_preserves_recent_and_unrelated_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = 2_000_000.0
-    monkeypatch.setattr("rebrickable.refresh.time.time", lambda: now)
+    original_time = time.time
+    monkeypatch.setattr(refresh_module, "time", SimpleNamespace(time=lambda: now))
+    assert time.time is original_time
     expired = tmp_path / "refresh-expired"
     recent = tmp_path / "refresh-recent"
     unrelated = tmp_path / "other-cache"
@@ -563,6 +591,7 @@ def test_staging_cleanup_preserves_recent_and_unrelated_paths(
     assert (recent / "contents").is_file()
     assert (unrelated / "contents").is_file()
     assert regular_file.read_text() == "keep"
+    assert time.time is original_time
 
 
 def test_staging_cleanup_tolerates_removal_failure(

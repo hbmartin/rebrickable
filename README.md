@@ -19,8 +19,8 @@ not require an API key and do not perform network I/O.
 
 Requires Python 3.12 or newer.
 
-HTTP dependencies require `httpx2>=2.12.0` and, for the LDraw extra,
-`urllib3>=2.8.0` to include upstream security fixes.
+Minimum dependency versions for the reviewed upstream security fixes are
+declared in the [package metadata](https://github.com/hbmartin/rebrickable/blob/main/pyproject.toml), including the LDraw extra.
 
 ```console
 uv add rebrickable          # or: pip install rebrickable
@@ -121,6 +121,10 @@ Every command prints to stdout, keeps progress and diagnostics on stderr, and
 returns a meaningful exit code (`0` ok, `2` invalid input, `3` missing data,
 `4` incomplete translation, `5` API failure).
 
+When a stdout consumer closes early, the CLI exits quietly with `0`, preserving
+any nonzero status already computed. A closed stderr drops further diagnostics
+while the command continues with stdout and its own exit status.
+
 | Command                 | Purpose                                             |
 | ----------------------- | --------------------------------------------------- |
 | `status`                | Inspect and verify local catalog state              |
@@ -207,12 +211,6 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 
 ## Development
 
-Domain dataclasses now require named constructor arguments, for example
-`LDrawBomItem(part_num="3001.dat", color_code=4, quantity=2)`. This unreleased
-breaking change is documented in the
-[keyword-only constructor migration guide](https://hbmartin.github.io/rebrickable/migration-keyword-only/)
-and requires a major release under the project's semantic-versioning policy.
-
 ```console
 uv sync --all-extras --all-groups --locked
 uv run python scripts/validate.py static
@@ -262,6 +260,12 @@ credential and disposable-account guards, with account mutations off by default.
 The manual real-catalog benchmark records five warmed samples, timing medians,
 snapshot fingerprints, and refresh/query RSS, enforcing a default 512 MiB ceiling.
 Documentation deployment continues on pushes to `main`.
+
+Cancellation drains active imports, bridge writes, and connection workers.
+Once snapshot promotion starts, activation and pruning finish before cancellation
+propagates; see the [quickstart](https://hbmartin.github.io/rebrickable/quickstart/) for the cancellation contract.
+CodeQL centrally excludes the unused-import and ineffectual-statement queries;
+cycle and unused-global checks remain enabled, with Ruff covering unused imports.
 
 Package metadata must score 10/10 with
 [pyroma621](https://pypi.org/project/pyroma621/), both from the checkout and the

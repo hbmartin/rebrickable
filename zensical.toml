@@ -12,7 +12,6 @@ nav = [
   { "Home" = "index.md" },
   { "Quickstart" = "quickstart.md" },
   { "Migrating to 1.1" = "migration-1.1.md" },
-  { "Keyword-only constructors (unreleased)" = "migration-keyword-only.md" },
   { "Data model" = "data-model.md" },
   { "API v3" = "api.md" },
   { "CLI" = "cli.md" },

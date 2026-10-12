@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from rebrickable.types import MappingSource, MappingStatus
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class LDrawBomItem:
     part_num: str
     color_code: int
@@ -30,7 +30,7 @@ class LDrawBomItem:
         return cls(part_num=part, color_code=int(color), quantity=quantity)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class LDrawColorInfo:
     code: int
     name: str
@@ -56,7 +56,7 @@ class LDrawColorInfo:
         )
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class MatchCandidate:
     identifier: str
     name: str | None
@@ -64,7 +64,7 @@ class MatchCandidate:
     confidence: float
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartMatch:
     source_identifier: str
     target_identifier: str | None
@@ -76,7 +76,7 @@ class PartMatch:
     snapshot_id: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class ColorMatch:
     source_identifier: int
     target_identifier: int | None
@@ -88,7 +88,7 @@ class ColorMatch:
     snapshot_id: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class TranslatedBomRow:
     ldraw_part_num: str
     ldraw_color_code: int
@@ -100,7 +100,7 @@ class TranslatedBomRow:
     color_match: ColorMatch
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class TranslationReport:
     rows: tuple[TranslatedBomRow, ...]
     resolved_count: int

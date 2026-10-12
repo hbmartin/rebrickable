@@ -4,7 +4,7 @@ import asyncio
 import json
 import shutil
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -580,9 +580,18 @@ async def test_catalog_verification_rejects_failed_quick_check(
 ) -> None:
     cursor = AsyncMock(spec=aiosqlite.Cursor)
     cursor.fetchone.return_value = result
-    connection = MagicMock(spec=aiosqlite.Connection)
-    connection.__aenter__.return_value = connection
-    connection.execute = AsyncMock(return_value=cursor)
+
+    class Connection:
+        execute = AsyncMock(return_value=cursor)
+        close = AsyncMock()
+
+        def __await__(self) -> Generator[None, None, Connection]:
+            async def opened() -> Connection:
+                return self
+
+            return opened().__await__()
+
+    connection = Connection()
     connect = MagicMock(return_value=connection)
     monkeypatch.setattr("rebrickable.catalog.database.aiosqlite.connect", connect)
 
@@ -591,7 +600,7 @@ async def test_catalog_verification_rejects_failed_quick_check(
     assert state.diagnostics == ("SQLite quick_check failed",)
     connection.execute.assert_awaited_once_with("PRAGMA quick_check")
     cursor.fetchone.assert_awaited_once()
-    connection.__aexit__.assert_awaited_once()
+    connection.close.assert_awaited_once()
     assert connect.call_args.kwargs == {"uri": True}
     assert connect.call_args.args[0].endswith("?mode=ro")
 

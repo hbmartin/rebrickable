@@ -71,24 +71,26 @@ The `[tool.garuff]` configuration excludes five conventions:
   overload declaration, and test creates excessive boilerplate.
 
 All other rules remain enabled for evaluation, including checks of generated
-Python files. Dataclass constructors now require named fields (`GAC009`); see
-[the unreleased migration guide](migration-keyword-only.md) before updating
-callers. Generated registry or query-type changes must go through their
-generator. Protocol bodies use descriptive docstrings (`GAC003`), and
+Python files. `GAC009` enforces keyword-only construction for internal records,
+including `Parameter`, `Operation`, `DatasetDefinition`, and `CatalogPaths`.
+Precise per-file exclusions preserve positional constructors for public records,
+including configuration, progress events, domain values, and API exceptions.
+Generated registry or query-type changes must go through their generator. Protocol bodies use descriptive docstrings (`GAC003`), and
 docstrings use single backticks (`GAC004`). Avoid applying unreviewed automatic
 fixes, especially after changing the active rules or pinned revision.
 
 The workflow preserves full output and the process exit code in a
-`garuff-report` artifact and adds a short run summary. Exit `1` can also mean a
-parse or suppression error, so it is not proof of an ordinary lint finding.
+`garuff-report` artifact and adds a short run summary. A nonzero exit can mean
+findings, parse/suppression errors, or a tool failure, including a crash with
+exit `1`; the summary does not infer the cause from the status alone.
 The entire job is advisory, including installation, configuration, and checker
 failures. Check its step outcomes and logs even when required CI passes. Only
 promote it to a required gate after reviewing the findings and its stability.
 
 Initial evaluation on 2026-10-12 used rebrickable commit `597bca7` and garuff
 revision `7d126c00f13b4d94f39f1107934089241ab7a6a1` (version `2026.7.0`).
-The unconfigured run completed with 865 findings. The three exclusions remove
-145 findings, leaving these 720 advisory candidates across `src`, `scripts`,
+The unconfigured run completed with 865 findings. The initial three exclusions
+removed 145 findings, leaving these 720 advisory candidates across `src`, `scripts`,
 and `tests`:
 
 | Rule | Findings | Review consideration |
@@ -103,7 +105,8 @@ The tool installed successfully and did not crash in the initial runs. This
 small sample does not establish stability, and the counts apply to the
 committed baseline rather than uncommitted work in another checkout.
 
-After the requested cleanup, `GAC008` and `GAC010` are also disabled. The
-remaining 58 dataclass, 12 docstring-formatting, and 6 Protocol-body findings
-have been fixed. The initial counts above record the evaluation before this
-cleanup rather than current outstanding findings.
+The current policy also disables `GAC008` and `GAC010`, retains keyword-only
+internal records, and exempts public records from `GAC009` to preserve 1.x
+compatibility. Protocol-body and docstring-formatting findings were addressed
+without changing public signatures. The table records the initial evaluation;
+it does not list current outstanding findings.

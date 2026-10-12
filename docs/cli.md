@@ -28,6 +28,12 @@ without `--theme-id` are rejected with the invalid-input status rather than
 silently ignored. The global `--version` prints the package version; the
 `set`/`minifig` `--version N` option instead selects an inventory version.
 
+Piping output to a consumer that closes early (such as `head`) exits quietly
+with `0`, unless the command has already computed a nonzero status. This also
+applies to help and version output. A closed stderr drops further progress and
+diagnostics without interrupting the command or discarding healthy stdout.
+Usage errors retain status `2`, even when their diagnostics cannot be delivered.
+
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
 part-count, category, material, limit, and offset filters. `catalog doctor`
 reports Python/SQLite/package versions, catalog diagnostics, API-key presence

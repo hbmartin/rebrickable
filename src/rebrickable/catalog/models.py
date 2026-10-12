@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Theme:
     id: int
     name: str
@@ -24,7 +24,7 @@ class Theme:
         return theme_url(self.id)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Color:
     id: int
     name: str
@@ -36,13 +36,13 @@ class Color:
     year_to: int | None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartCategory:
     id: int
     name: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Part:
     part_num: str
     name: str
@@ -54,7 +54,7 @@ class Part:
         return part_url(self.part_num)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartRelationship:
     type: RelationshipType
     raw_type: str
@@ -62,7 +62,7 @@ class PartRelationship:
     parent_part_num: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartUsage:
     """Aggregate newest-inventory usage for a canonical part."""
 
@@ -76,7 +76,7 @@ class PartUsage:
     last_year: int | None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Element:
     element_id: str
     part_num: str
@@ -84,7 +84,7 @@ class Element:
     design_id: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Set:
     set_num: str
     name: str
@@ -98,7 +98,7 @@ class Set:
         return set_url(self.set_num)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Minifig:
     fig_num: str
     name: str
@@ -110,7 +110,7 @@ class Minifig:
         return minifig_url(self.fig_num)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventoryPart:
     part: Part
     color: Color
@@ -120,19 +120,19 @@ class InventoryPart:
     image_url: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventorySet:
     set: Set
     quantity: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventoryMinifig:
     minifig: Minifig
     quantity: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Inventory:
     owner_num: str
     version: int
@@ -141,7 +141,7 @@ class Inventory:
     minifigs: tuple[InventoryMinifig, ...]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventoryVersion:
     id: int
     owner_num: str
@@ -149,7 +149,7 @@ class InventoryVersion:
     is_latest: bool
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SetOccurrence:
     """One part/color occurrence in a set's newest inventory."""
 
@@ -160,7 +160,7 @@ class SetOccurrence:
     inventory_version: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventoryDiffRow:
     part: Part
     color: Color
@@ -178,7 +178,7 @@ class InventoryDiffRow:
         return self.after_spare_quantity - self.before_spare_quantity
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class InventoryDiff(Sequence[InventoryDiffRow]):
     owner_num: str
     before_version: int
@@ -194,13 +194,9 @@ class InventoryDiff(Sequence[InventoryDiffRow]):
         return len(self.rows)
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> InventoryDiffRow: ...
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[InventoryDiffRow, ...]: ...
 
     @override
@@ -210,13 +206,13 @@ class InventoryDiff(Sequence[InventoryDiffRow]):
         return self.rows[index]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomContribution:
     quantity: int
     owner_path: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomRow:
     part: Part
     color: Color
@@ -224,7 +220,7 @@ class BomRow:
     provenance: tuple[BomContribution, ...]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SkippedInventory:
     """A contained set or minifig whose own inventory could not be expanded."""
 
@@ -233,7 +229,7 @@ class SkippedInventory:
     reason: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class CatalogBom(Sequence[BomRow]):
     """Recursive BOM rows plus diagnostics for unexpandable sub-items."""
 
@@ -249,13 +245,9 @@ class CatalogBom(Sequence[BomRow]):
         return len(self.rows)
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> BomRow: ...
 
     @overload
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[BomRow, ...]: ...
 
     @override

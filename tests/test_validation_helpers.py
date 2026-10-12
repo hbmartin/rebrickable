@@ -102,8 +102,6 @@ def test_drift_dispatch_success(
 
     def command(*args: str) -> str:
         calls.append(args)
-        if args[1:3] == ("diff", "--cached"):
-            return "fixture patch"
         if args[1] == "ls-remote":
             return "existing branch" if existing else ""
         if args[1] == "rev-parse":
@@ -113,6 +111,9 @@ def test_drift_dispatch_success(
         return ""
 
     monkeypatch.setattr(dispatch_drift, "command", command)
+    monkeypatch.setattr(
+        dispatch_drift.subprocess, "check_output", lambda *_args: b"fixture patch"
+    )
     dispatch_drift.publish_drift("b" * 40, "automation/fixture")
     assert any(call[1:3] == ("pr", "create") for call in calls) is not existing
     dispatches = [call for call in calls if call[1:3] == ("workflow", "run")]
@@ -142,13 +143,14 @@ def test_drift_command_failures_propagate(
     def command(*args: str) -> str:
         if args[: len(stage)] == stage:
             raise subprocess.CalledProcessError(1, args)
-        if args[1:3] == ("diff", "--cached"):
-            return "fixture patch"
         if args[1:3] == ("pr", "list"):
             return "[]"
         return ""
 
     monkeypatch.setattr(dispatch_drift, "command", command)
+    monkeypatch.setattr(
+        dispatch_drift.subprocess, "check_output", lambda *_args: b"fixture patch"
+    )
     with pytest.raises(subprocess.CalledProcessError):
         dispatch_drift.publish_drift("a" * 40, "automation/fixture")
 
@@ -182,16 +184,18 @@ def test_drift_no_changes_and_invalid_lookup(monkeypatch: pytest.MonkeyPatch) ->
         return ""
 
     monkeypatch.setattr(dispatch_drift, "command", empty)
+    monkeypatch.setattr(dispatch_drift.subprocess, "check_output", lambda *_args: b"")
     dispatch_drift.publish_drift("a" * 40, "automation/fixture")
     assert not any(args[1] == "push" for args in calls)
 
     def invalid(*args: str) -> str:
-        if args[1:3] == ("diff", "--cached"):
-            return "fixture patch"
         if args[1:3] == ("pr", "list"):
             return "{}"
         return ""
 
     monkeypatch.setattr(dispatch_drift, "command", invalid)
+    monkeypatch.setattr(
+        dispatch_drift.subprocess, "check_output", lambda *_args: b"fixture patch"
+    )
     with pytest.raises(ValueError, match="lookup"):
         dispatch_drift.publish_drift("a" * 40, "automation/fixture")

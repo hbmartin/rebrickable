@@ -6,18 +6,29 @@ import asyncio
 import importlib.util
 import json
 import os
+import pickle
 import socket
 import subprocess
 import sys
 from importlib import metadata, resources
 from pathlib import Path
+from unittest.mock import patch
 
 from catalog_fixture import build_catalog_config  # ty: ignore[unresolved-import]
 
 import rebrickable
-from rebrickable import Bom, Config, RebrickableSession
+from rebrickable import (
+    ApiThrottledError,
+    Bom,
+    ColorRef,
+    Config,
+    LDrawBomItem,
+    PartRef,
+    RebrickableSession,
+)
 from rebrickable.api.models import ApiPart
 from rebrickable.errors import OptionalDependencyError
+from rebrickable.progress import ProgressEvent, ProgressStage
 
 
 def check_installation() -> Path:
@@ -33,6 +44,13 @@ def check_installation() -> Path:
         ).extra["custom"]
         == 42
     )
+    assert Config(Path("catalog.sqlite")).database_path == Path("catalog.sqlite")
+    assert PartRef("ldraw", "3001.dat") == PartRef(system="ldraw", value="3001")
+    assert ColorRef("ldraw", "4") == ColorRef(system="ldraw", value=4)
+    assert LDrawBomItem("3001.dat", 4, 2).quantity == 2
+    assert ProgressEvent(ProgressStage.DOWNLOAD).stage is ProgressStage.DOWNLOAD
+    error = ApiThrottledError(429, "/parts/", "parts", "slow down")
+    assert pickle.loads(pickle.dumps(error)) == error  # noqa: S301 - owned smoke value
     return package
 
 
@@ -78,14 +96,25 @@ def check_cli() -> None:
     assert json.loads(spec.read_text())["swagger"] == "2.0"
 
 
-if __name__ == "__main__":
-
+def _check_offline() -> Path:
     def deny_network(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("installed offline check attempted networking")
 
-    socket.create_connection = deny_network
-    socket.socket.connect = deny_network
-    package = check_installation()
-    asyncio.run(check_catalog())
-    check_cli()
+    with asyncio.Runner() as runner:
+        # Windows creates a TCP socketpair while initializing the event loop.
+        runner.get_loop()
+        with (
+            patch.object(socket, "create_connection", deny_network),
+            patch.object(socket, "getaddrinfo", deny_network),
+            patch.object(socket.socket, "connect", deny_network),
+            patch.object(socket.socket, "connect_ex", deny_network),
+        ):
+            package = check_installation()
+            runner.run(check_catalog())
+            check_cli()
+    return package
+
+
+if __name__ == "__main__":
+    package = _check_offline()
     print(f"Installed {sys.argv[1]} checks passed: {package}")

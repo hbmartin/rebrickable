@@ -25,7 +25,7 @@ def _part_color_key(key: tuple[PartRef, ColorRef]) -> tuple[str, str, str, int]:
     return part.system.value, part.value, color.system.value, color.value
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomItem:
     part: PartRef
     color: ColorRef
@@ -36,14 +36,14 @@ class BomItem:
             raise ValueError("BOM quantity must be positive")
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class DuplicateBomRow:
     part: PartRef
     color: ColorRef
     occurrences: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomDiffRow:
     part: PartRef
     color: ColorRef
@@ -55,12 +55,12 @@ class BomDiffRow:
         return self.after - self.before
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomDiff:
     rows: tuple[BomDiffRow, ...]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomValidationRow:
     item: BomItem
     available: bool
@@ -71,7 +71,7 @@ class BomValidationRow:
     substitutions: tuple[SubstitutionEvidence, ...] = ()
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class BomValidationReport:
     rows: tuple[BomValidationRow, ...]
     total_quantity: int
@@ -81,7 +81,7 @@ class BomValidationReport:
     substitutable_count: int = 0
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Bom:
     items: tuple[BomItem, ...]
     duplicate_rows: tuple[DuplicateBomRow, ...] = ()

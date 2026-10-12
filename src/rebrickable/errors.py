@@ -53,7 +53,7 @@ class CatalogImportError(RebrickableError):
     """A validated catalog could not be imported or promoted."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class ApiError(RebrickableError):
     """Safe, structured details about a failed API operation."""
 
@@ -80,32 +80,12 @@ class ApiError(RebrickableError):
         status = "transport" if self.status is None else str(self.status)
         return f"{self.operation_id} failed ({status}): {self.detail}"
 
-    def __reduce__(
-        self,
-    ) -> tuple[
-        object,
-        tuple[type[ApiError], _ApiErrorValues] | tuple[str, str, str],
-    ]:
-        return (
-            _rebuild_api_error,
-            (
-                type(self),
-                (
-                    self.status,
-                    self.path_template,
-                    self.operation_id,
-                    self.detail,
-                    self.request_id,
-                    self.retry_after,
-                ),
-            ),
-        )
-
 
 def _rebuild_api_error(
     error_type: type[ApiError],
     values: _ApiErrorValues,
 ) -> ApiError:
+    """Load errors pickled by the interim keyword-only constructor cleanup."""
     status, path_template, operation_id, detail, request_id, retry_after = values
     return error_type(
         status=status,

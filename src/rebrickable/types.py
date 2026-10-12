@@ -103,12 +103,12 @@ class ExitCode(IntEnum):
     API_FAILURE = 5
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartRef:
     system: PartSystem
     value: str
 
-    def __init__(self, *, system: PartSystem | str, value: str) -> None:
+    def __init__(self, system: PartSystem | str, value: str) -> None:
         resolved = PartSystem(system)
         if resolved is PartSystem.LDRAW:
             value = normalize_ldraw_code(value)
@@ -118,12 +118,12 @@ class PartRef:
             raise ValueError("part identifier must not be empty")
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class ColorRef:
     system: ColorSystem
     value: int
 
-    def __init__(self, *, system: ColorSystem | str, value: int | str) -> None:
+    def __init__(self, system: ColorSystem | str, value: int | str) -> None:
         object.__setattr__(self, "system", ColorSystem(system))
         if isinstance(value, str):
             try:
@@ -136,14 +136,14 @@ class ColorRef:
         object.__setattr__(self, "value", int(value))  # pyrefly: ignore[unnecessary-type-conversion]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class Provenance:
     source: ProvenanceSource
     reference: str
     retrieved_at: datetime | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class FileFingerprint:
     dataset: str
     url: str
@@ -155,7 +155,7 @@ class FileFingerprint:
     unknown_columns: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class CatalogState:
     status: CatalogStatus
     database_path: Path
@@ -167,7 +167,7 @@ class CatalogState:
     diagnostics: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class RefreshReport:
     outcome: RefreshOutcome
     snapshot_id: str
@@ -175,7 +175,7 @@ class RefreshReport:
     files: tuple[FileFingerprint, ...]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SearchFilters:
     year_from: int | None = None
     year_to: int | None = None
@@ -187,7 +187,7 @@ class SearchFilters:
     include_subthemes: bool = False
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SearchHit:
     kind: SearchKind
     canonical_id: str
@@ -198,14 +198,14 @@ class SearchHit:
     matched_value: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SearchResult:
     hits: tuple[SearchHit, ...]
     total: int
     snapshot_id: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class PartColorAvailability:
     available: bool
     rebrickable_part: str | None
@@ -222,14 +222,14 @@ class PartColorAvailability:
     provenance: tuple[Provenance, ...] = ()
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class ExternalIdentifier:
     system: str
     value: str
     provenance: Provenance
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class SubstitutionEvidence:
     source: PartRef
     candidate: PartRef
@@ -246,6 +246,6 @@ def freeze_json(value: Any) -> Any:
     """Recursively freeze JSON-compatible data for immutable DTO extras."""
     if isinstance(value, dict):
         return MappingProxyType({str(k): freeze_json(v) for k, v in value.items()})
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):  # pyrefly: ignore[implicit-any-type-argument]
         return tuple(freeze_json(item) for item in value)
     return value
