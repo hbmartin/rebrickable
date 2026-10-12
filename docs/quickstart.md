@@ -8,7 +8,8 @@ rebrickable status
 rebrickable refresh
 ```
 
-The refresh downloads and validates all 12 daily gzip CSV files. It builds a
+The refresh downloads and validates all 12 daily gzip CSV files, preserving the
+archive bytes for storage and fingerprints. It builds a
 unique snapshot and changes one atomic active pointer only after schema,
 cross-file references, FTS, row counts, and SQLite integrity pass. A transient
 mixed CDN generation is downloaded once more after a bounded delay; a second

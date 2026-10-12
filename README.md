@@ -19,8 +19,8 @@ not require an API key and do not perform network I/O.
 
 Requires Python 3.12 or newer.
 
-HTTP dependencies require `httpx2>=2.12.0` and, for the LDraw extra,
-`urllib3>=2.8.0` to include upstream security fixes.
+Minimum dependency versions for the reviewed upstream security fixes are
+declared in the [package metadata](https://github.com/hbmartin/rebrickable/blob/main/pyproject.toml), including the LDraw extra.
 
 ```console
 uv add rebrickable          # or: pip install rebrickable

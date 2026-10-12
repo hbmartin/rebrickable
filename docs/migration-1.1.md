@@ -33,6 +33,13 @@ python -m pip uninstall pyrebrickable
 Do not remove an application-data catalog during the package upgrade. Version
 1.1 deliberately reads the version 1 database and manifest produced by 1.0.
 
+Catalog refresh requests `Accept-Encoding: identity` and saves the gzip archive
+bytes exactly, including when a server labels the archive with
+`Content-Encoding: gzip`. Custom `downloads_base_url` servers must return the
+gzip CSV archive directly. An additional transport-compression layer is not
+decoded and fails catalog validation; the previous active snapshot remains
+usable. Existing snapshots and their fingerprints do not require migration.
+
 ## Compatibility summary
 
 | Area | 1.0 behavior | 1.1 behavior | Action |

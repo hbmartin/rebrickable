@@ -77,7 +77,7 @@ async def _download_one(
     force: bool,
     callback: ProgressCallback | None,
 ) -> tuple[bool, dict[str, Any]]:
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"Accept-Encoding": "identity"}
     if not force and previous is not None:
         if previous.etag:
             headers["If-None-Match"] = previous.etag
@@ -95,7 +95,9 @@ async def _download_one(
             digest = hashlib.sha256()
             length = 0
             with destination.open("wb") as handle:
-                async for block in response.aiter_bytes():
+                # Catalog objects are gzip archives, including when mislabeled
+                # with Content-Encoding. Preserve the archive bytes verbatim.
+                async for block in response.aiter_raw():
                     handle.write(block)
                     digest.update(block)
                     length += len(block)

@@ -3,8 +3,8 @@
 Core translation uses neutral `LDrawBomItem` and `LDrawColorInfo` records and does
 not import `pyldraw3`. Install `rebrickable[ldraw]` for adapters built only on the
 public `Model`, `BomRow`, `Colour`, `Parts`, `load_model`, and BOM APIs.
-The extra requires `urllib3>=2.8.0` for security fixes in the HTTP stack installed
-by `pyldraw3`.
+The extra includes HTTP dependency security floors declared in the
+[package metadata](https://github.com/hbmartin/rebrickable/blob/main/pyproject.toml).
 
 Part resolution order is user override, cached API LDraw ID, exact normalized
 canonical ID, relationship candidates, then unresolved. Color resolution uses

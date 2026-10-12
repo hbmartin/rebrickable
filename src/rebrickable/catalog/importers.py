@@ -7,6 +7,7 @@ import gzip
 import json
 import re
 import sqlite3
+import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -210,7 +211,14 @@ def inspect_header(path: Path, definition: DatasetDefinition) -> tuple[str, ...]
         with gzip.open(path, mode="rt", encoding="utf-8-sig", newline="") as handle:
             reader = csv.reader(handle)
             header = next(reader)
-    except (OSError, EOFError, UnicodeError, csv.Error, StopIteration) as exc:
+    except (
+        OSError,
+        EOFError,
+        UnicodeError,
+        csv.Error,
+        StopIteration,
+        zlib.error,
+    ) as exc:
         raise DatasetSchemaError(
             f"unable to read {definition.filename}: {exc}"
         ) from exc
@@ -351,7 +359,7 @@ def import_catalog(
         with suppress(sqlite3.Error, OSError):
             connection.execute("PRAGMA optimize")
             connection.commit()
-    except (sqlite3.Error, OSError, EOFError) as exc:
+    except (sqlite3.Error, OSError, EOFError, zlib.error) as exc:
         if not committed:
             connection.rollback()
         raise CatalogImportError(str(exc)) from exc

@@ -82,17 +82,22 @@ def verify(directory: Path) -> Path:
         raise ValueError("release tag does not match distribution version")
 
     def compact(requirement: str) -> str:
-        normalized = requirement.replace(" ", "").lower()
+        value, separator, marker = requirement.partition(";")
+        normalized = value.replace(" ", "").lower()
         # Compare constraint sets independently of metadata serializer ordering.
         match = re.match(r"([a-z0-9_.-]+)(.*)", normalized)
         if match is None:
             raise ValueError("invalid requirement metadata")
-        return match[1] + ",".join(sorted(match[2].split(",")))
+        value = match[1] + ",".join(sorted(match[2].split(",")))
+        if separator:
+            marker = marker.strip().replace('"', "'")
+            return f"{value};{marker}"
+        return value
 
     actual = {
         compact(item)
         for item in wheel_metadata.get_all("Requires-Dist", [])
-        if ";" not in item
+        if not re.search(r"\bextra\b", item.partition(";")[2])
     }
     if actual != {compact(item) for item in project["dependencies"]}:
         raise ValueError("runtime dependencies differ from project")
