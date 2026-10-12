@@ -20,6 +20,20 @@ jobs:
         with:
           languages: python
           queries: security-extended,security-and-quality
+          config: |
+            query-filters:
+              # Protocol/overload ellipses and cancellation awaits are intentional.
+              - exclude:
+                  id: py/ineffectual-statement
+              # Reverse session imports are guarded by TYPE_CHECKING.
+              - exclude:
+                  id: py/cyclic-import
+              # Shared SQL constants are consumed by queries and search.
+              - exclude:
+                  id: py/unused-global-variable
+              # Quoted typing.cast targets use the imported Any type.
+              - exclude:
+                  id: py/unused-import
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"

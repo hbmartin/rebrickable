@@ -490,9 +490,15 @@ def main(argv: list[str] | None = None) -> int:
         return int(asyncio.run(_run(parser.parse_args(argv))))
     except BrokenPipeError:
         try:
+            stdout_descriptor = sys.stdout.fileno()
             devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, sys.stdout.fileno())
+            try:
+                os.dup2(devnull, stdout_descriptor)
+            finally:
+                if devnull != stdout_descriptor:
+                    os.close(devnull)
         except (OSError, ValueError, io.UnsupportedOperation):
+            # Cleanup is best effort for closed or replaced stdout; exit quietly.
             pass
         return int(ExitCode.OK)
     except (ValueError, argparse.ArgumentError, OptionalDependencyError) as exc:
