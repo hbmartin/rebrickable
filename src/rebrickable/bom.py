@@ -20,6 +20,11 @@ from rebrickable.types import (
 )
 
 
+def _part_color_key(key: tuple[PartRef, ColorRef]) -> tuple[str, str, str, int]:
+    part, color = key
+    return part.system.value, part.value, color.system.value, color.value
+
+
 @dataclass(frozen=True, slots=True)
 class BomItem:
     part: PartRef
@@ -191,12 +196,7 @@ class Bom:
             occurrences[key] += 1
         ordered = sorted(
             quantities,
-            key=lambda key: (
-                key[0].system.value,
-                key[0].value,
-                key[1].system.value,
-                key[1].value,
-            ),
+            key=_part_color_key,
         )
         return cls(
             tuple(
@@ -223,12 +223,7 @@ class Bom:
         after = {(item.part, item.color): item.quantity for item in other.items}
         keys = sorted(
             before.keys() | after.keys(),
-            key=lambda key: (
-                key[0].system.value,
-                key[0].value,
-                key[1].system.value,
-                key[1].value,
-            ),
+            key=_part_color_key,
         )
         return BomDiff(
             tuple(

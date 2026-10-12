@@ -487,7 +487,8 @@ async def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     try:
-        return int(asyncio.run(_run(parser.parse_args(argv))))
+        # Normalize IntEnum exit codes to the public plain-int return contract.
+        return int(asyncio.run(_run(parser.parse_args(argv))))  # pyrefly: ignore[unnecessary-type-conversion]
     except BrokenPipeError:
         try:
             stdout_descriptor = sys.stdout.fileno()
@@ -513,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     except RebrickableError as exc:
         print(str(exc), file=sys.stderr)
         return int(ExitCode.UNEXPECTED)
-    except Exception as exc:  # pragma: no cover - last-resort CLI boundary
+    except Exception as exc:  # noqa: BLE001 - final CLI diagnostic boundary
         print(f"unexpected failure: {exc}", file=sys.stderr)
         return int(ExitCode.UNEXPECTED)
 

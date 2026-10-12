@@ -52,9 +52,9 @@ dependencies, and review `uv.lock` for registry or unrelated dependency churn.
 ```bash
 uv run ruff format --check src scripts tests
 uv run ruff check src scripts tests
-uv run ty check src/rebrickable
-uv run pyrefly check src/rebrickable
-uv run pytest -q
+uv run ty check src/rebrickable tests/typing
+uv run pyrefly check --min-severity warn src/rebrickable tests/typing
+uv run python scripts/validate.py tests
 ```
 
 ### Full local verification
@@ -62,17 +62,22 @@ uv run pytest -q
 ```bash
 uv run ruff format src scripts tests
 uv run ruff check src scripts tests
-uv run ty check src/rebrickable
-uv run pyrefly check src/rebrickable
+uv run ty check src/rebrickable tests/typing
+uv run pyrefly check --min-severity warn src/rebrickable tests/typing
 uv run deptry .
 uv run pyroma --min 10 .
 uv run zensical build --clean --strict
-uv run pytest --cov=rebrickable --cov-branch --cov-report=term -q
+uv run python scripts/validate.py tests
+uv run python scripts/validate.py generated
+uv run python scripts/validate.py performance
+uv run python scripts/validate.py workflows
 uv build --clear
 ```
 
-The enforced branch-coverage floor is 97%. Do not lower it to make a change
-pass. CI runs the quality suite on Python 3.12, 3.13, and 3.14 and runs package
+Coverage must meet both the 97% combined statement/branch floor and the
+independently measured 95% branch floor. Do not lower either to make a change
+pass. Use `uv run python scripts/validate.py tests` for asyncio debugging, strict
+pytest, and both gates; incomplete or malformed branch reports fail validation. CI runs the quality suite on Python 3.12, 3.13, and 3.14 and runs package
 smoke tests on Linux, macOS, and Windows.
 
 ### Integration and mutation tests
@@ -109,6 +114,18 @@ After a catalog has been refreshed locally:
 ```bash
 uv run python scripts/benchmark_catalog.py
 ```
+
+The real-catalog benchmark workflow is manual-only. It measures five warmed
+samples and enforces the existing timing ceilings on medians plus a default
+512 MiB RSS ceiling; CI also bounds refresh RSS.
+
+Run `uv run python scripts/validate.py performance` for deterministic synthetic
+allocation/RSS and SQL-count gates. Property tests use 100 reproducible examples;
+manual extended validation uses `scripts/validate.py tests --profile extended`
+for 1,000. Workflow validation requires actionlint 1.7.12, ShellCheck 0.11.0, and
+zizmor 1.30.1 (`scripts/validate.py workflows`); Linux CI installs checksum-verified
+binaries with `scripts/install_workflow_tools.py`. Run `scripts/validate.py generated`
+to verify checksum-guarded, byte-identical regeneration without changing sources.
 
 Treat the benchmark as a regression gate, not a microbenchmark competition.
 Preserve result correctness and bounded memory use before optimizing timings.

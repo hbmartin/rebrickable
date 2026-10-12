@@ -55,7 +55,7 @@ async def load_inventory(
     )
     row = await (
         await connection.execute(
-            f"SELECT id, version FROM {source} WHERE owner_num=?{version_clause} "
+            f"SELECT id, version FROM {source} WHERE owner_num=?{version_clause} "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
             "ORDER BY id DESC LIMIT 1",
             values,
         )

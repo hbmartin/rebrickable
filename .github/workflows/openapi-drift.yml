@@ -1,8 +1,6 @@
 name: Upstream API drift
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "41 5 * * *"
 permissions: {}
 concurrency:
   group: openapi-drift
@@ -12,6 +10,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -24,27 +23,7 @@ jobs:
       - run: uv sync --all-groups --locked
       - run: curl --fail --silent --show-error --location 'https://rebrickable.com/api/v3/swagger/?format=openapi' --output /tmp/rebrickable-openapi.json
       - run: uv run python -m scripts.update_openapi /tmp/rebrickable-openapi.json
-      - name: Open pinned drift PR
-        run: |
-          git diff --quiet && exit 0
-          branch="automation/openapi-$(date -u +%Y-%m-%d)"
-          git add -A src/rebrickable/data src/rebrickable/api/operation_registry.py src/rebrickable/api/query_types.py
-          git diff --cached --binary > /tmp/openapi.patch
-          git reset
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            git fetch origin "$branch:refs/remotes/origin/$branch"
-            git switch -C "$branch" "origin/$branch"
-          else
-            git switch -c "$branch"
-          fi
-          git reset --hard "$GITHUB_SHA"
-          git clean -fd src/rebrickable/data
-          git apply --index /tmp/openapi.patch
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git commit -m 'chore: vendor upstream API drift'
-          gh auth setup-git
-          git push --force-with-lease origin "$branch"
-          gh pr create --base main --head "$branch" --title 'chore: review Rebrickable API drift' --body 'Automated dated Swagger update. Parity CI intentionally remains failing for unreviewed endpoints or signature changes.' || true
+      - name: Push drift, find or create PR, and dispatch exact-commit validation
+        run: uv run --locked python scripts/dispatch_drift.py
         env:
           GH_TOKEN: ${{ github.token }}

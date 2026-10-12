@@ -10,14 +10,22 @@ import httpx2
 
 class ResponseLike(Protocol):
     @property
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def status_code(self) -> int: ...
 
     @property
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def headers(self) -> Mapping[str, str]: ...
 
     @property
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def text(self) -> str: ...
 
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def json(self) -> Any: ...
 
 
@@ -31,6 +39,8 @@ class AsyncTransport(Protocol):
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         json: Any | None = None,
+        # Protocol declaration intentionally has no implementation.
+        # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     ) -> ResponseLike: ...
 
 

@@ -7,10 +7,15 @@ import importlib
 import json
 import sqlite3
 from collections.abc import Iterable, Mapping
+
+# Any is used by the quoted cast contracts below.
+# codeql[py/unused-import]
 from typing import TYPE_CHECKING, Any, cast
 
 from filelock import FileLock
 
+# Mappings reference the composition root only under TYPE_CHECKING.
+# codeql[py/cyclic-import]
 from rebrickable.bridge.mappings import (
     normalize_ldraw_code,
     resolve_ldraw_color,
@@ -36,6 +41,9 @@ if TYPE_CHECKING:
 
     from rebrickable.api.client import RebrickableClient
     from rebrickable.config import Config
+
+    # Type-only reference; the composition root does not import at runtime here.
+    # codeql[py/cyclic-import]
     from rebrickable.session import RebrickableSession
 
 _STATUS_SEVERITY = {
@@ -307,7 +315,7 @@ def _external_values(external_ids: object, system: str) -> tuple[str, ...]:
             values = values.get("ext_ids", values.get("ids", ()))
         if isinstance(values, str | int):
             values = (values,)
-        if isinstance(values, list | tuple):
+        if isinstance(values, (list, tuple)):
             return tuple(sorted({str(value) for value in values}))
     return ()
 

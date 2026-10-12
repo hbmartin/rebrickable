@@ -8,7 +8,7 @@ import re
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, TypeVar, Unpack, cast
+from typing import Any, TypeVar, Unpack
 from urllib.parse import quote
 
 import httpx2
@@ -370,7 +370,7 @@ class RebrickableClient:
             form=form,
             retry_mutation=retry_mutation,
         )
-        payload = (
+        payload: Any = (
             {}
             if response.status_code == 204 or not response.text
             else self._json(response, operation_id=operation_id)
@@ -389,7 +389,7 @@ class RebrickableClient:
     ) -> MutationResult:
         response = await self._send(operation_id, path_values=path, json_body=json_body)
         operation = OPERATIONS[operation_id]
-        payload = (
+        payload: Any = (
             []
             if response.status_code == 204 or not response.text
             else self._json(response, operation_id=operation_id)
@@ -455,14 +455,11 @@ class RebrickableClient:
         )
         operation = OPERATIONS[operation_id]
         page_model = ApiPage[item]  # ty: ignore[invalid-type-form]
-        return cast(
-            "ApiPage[T]",
-            decode_model(
-                page_model,
-                self._json(response, operation_id=operation_id),
-                operation_id=operation_id,
-                path_template=operation.path,
-            ),
+        return decode_model(
+            page_model,
+            self._json(response, operation_id=operation_id),
+            operation_id=operation_id,
+            path_template=operation.path,
         )
 
     async def _iter(

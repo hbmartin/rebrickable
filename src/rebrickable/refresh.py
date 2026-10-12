@@ -20,6 +20,7 @@ import httpx2
 from filelock import FileLock, Timeout
 
 from rebrickable._atomic import durable_replace
+from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import CatalogPaths, catalog_state
 from rebrickable.catalog.importers import DATASETS, import_catalog, inspect_header
@@ -162,6 +163,10 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
         connection.close()
 
 
+def _snapshot_name(path: Path) -> str:
+    return path.name
+
+
 def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
     """Remove superseded snapshots and orphaned partial transfers."""
     try:
@@ -170,7 +175,7 @@ def _prune_snapshots(paths: CatalogPaths, active_id: str, retain: int) -> None:
         return
     named = sorted(
         (child for child in children if child.is_dir() and child.name != active_id),
-        key=lambda child: child.name,
+        key=_snapshot_name,
         reverse=True,
     )
     keep = {active_id}
@@ -218,7 +223,7 @@ async def _refresh_attempt(
     prior_state = await catalog_state(config, verify=True)
     prior_by_name = {item.dataset: item for item in prior_state.files}
     config.cache_path.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(_prune_abandoned_staging, config.cache_path)
+    await run_in_thread(_prune_abandoned_staging, config.cache_path)
     staging = Path(tempfile.mkdtemp(prefix="refresh-", dir=config.cache_path))
     now = datetime.now(UTC)
     snapshot_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
@@ -254,7 +259,7 @@ async def _refresh_attempt(
                     )
                 source = paths.snapshots_dir / prior_state.snapshot_id / filename
                 try:
-                    await asyncio.to_thread(shutil.copy2, source, file_paths[name])
+                    await run_in_thread(shutil.copy2, source, file_paths[name])
                 except OSError as exc:
                     raise DownloadError(
                         f"unable to reuse cached {filename} from snapshot "
@@ -287,9 +292,7 @@ async def _refresh_attempt(
             )
         for definition in DATASETS:
             _emit(callback, ProgressEvent(ProgressStage.VALIDATE, definition.name))
-            await asyncio.to_thread(
-                inspect_header, file_paths[definition.name], definition
-            )
+            await run_in_thread(inspect_header, file_paths[definition.name], definition)
         database = staging / config.database_path.name
         loop = asyncio.get_running_loop()
 
@@ -305,7 +308,7 @@ async def _refresh_attempt(
                 ),
             )
 
-        row_counts, unknown = await asyncio.to_thread(
+        row_counts, unknown = await run_in_thread(
             import_catalog,
             file_paths,
             database,
@@ -314,7 +317,7 @@ async def _refresh_attempt(
             reporter=reporter,
             build_fts=False,
         )
-        await asyncio.to_thread(
+        await run_in_thread(
             materialize_overrides, config.mapping_overrides_path, database
         )
         fingerprints = tuple(
@@ -348,7 +351,7 @@ async def _refresh_attempt(
             thread_local=False,
         )
         try:
-            await asyncio.to_thread(lock.acquire)
+            await acquire_lock(lock)
         except Timeout as exc:
             raise CatalogImportError(
                 "another process holds the catalog promotion lock"
@@ -359,11 +362,11 @@ async def _refresh_attempt(
                 if prior_state.status is CatalogStatus.READY and prior_state.snapshot_id
                 else None
             )
-            await asyncio.to_thread(_carry_crosswalk, previous_database, database)
-            await asyncio.to_thread(shutil.move, staging, incoming)
-            await asyncio.to_thread(durable_replace, incoming, destination)
+            await run_in_thread(_carry_crosswalk, previous_database, database)
+            await run_in_thread(shutil.move, staging, incoming)
+            await run_in_thread(durable_replace, incoming, destination)
             _atomic_json(paths.active_pointer, {"snapshot_id": snapshot_id})
-            await asyncio.to_thread(
+            await run_in_thread(
                 _prune_snapshots, paths, snapshot_id, config.snapshot_retention
             )
         finally:
@@ -374,7 +377,7 @@ async def _refresh_attempt(
     finally:
         for leftover in (staging, incoming):
             if leftover.exists():
-                await asyncio.to_thread(shutil.rmtree, leftover, True)
+                await run_in_thread(shutil.rmtree, leftover, True)
 
 
 async def refresh_catalog(

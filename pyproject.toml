@@ -56,6 +56,8 @@ dev = [
   "pytest-socket>=0.7",
   "ruff>=0.15",
   "ty>=0.0.21",
+  "types-defusedxml>=0.7.0.20250822",
+  "types-PyYAML>=6.0.12.20250915",
   "urllib3>=2.8.0", # Security floor for pip-audit and pyroma621 via requests.
 ]
 docs = ["zensical>=0.0.47"]
@@ -80,8 +82,6 @@ target-version = "py312"
 select = ["ALL"]
 ignore = [
   "ANN401",
-  "ASYNC240",
-  "BLE001",
   "C901",
   "COM812",
   "CPY001",
@@ -106,11 +106,9 @@ ignore = [
   "PLR2004",
   "PTH105",
   "PYI034",
-  "S105",
   "S311",
   "S603",
   "S607",
-  "S608",
   "SIM117",
   "SLF001",
   "T201",
@@ -138,14 +136,18 @@ source = ["rebrickable"]
 
 [tool.coverage.report]
 show_missing = true
+precision = 2
 fail_under = 97
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--disable-socket --allow-unix-socket"
+addopts = "--disable-socket --allow-unix-socket --strict-config --strict-markers"
+xfail_strict = true
+filterwarnings = ["error"]
 markers = [
   "integration: uses current Rebrickable downloads or API",
   "mutation: performs guarded user-account mutations",
+  "performance: synthetic catalog resource bounds",
 ]
 
 [tool.deptry]
@@ -158,3 +160,7 @@ DEP002 = [
   "pyldraw3", # Imported dynamically so the core package stays optional.
   "urllib3", # Constrains the transitive requests dependency in the ldraw extra.
 ]
+
+[tool.pyrefly]
+preset = "strict"
+project-includes = ["src/rebrickable", "tests/typing"]

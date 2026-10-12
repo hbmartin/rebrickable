@@ -57,14 +57,14 @@ def store_crosswalks(
             if external_ids:
                 placeholders = ",".join("?" for _ in external_ids)
                 stale = connection.execute(
-                    "SELECT DISTINCT canonical_id FROM api_crosswalk_cache "
+                    "SELECT DISTINCT canonical_id FROM api_crosswalk_cache "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                     "WHERE entity_kind=? AND external_system=? "
                     f"AND external_id IN ({placeholders})",
                     (entity_kind, external_system, *external_ids),
                 ).fetchall()
                 affected.update(str(row[0]) for row in stale)
                 connection.execute(
-                    "DELETE FROM api_crosswalk_cache "
+                    "DELETE FROM api_crosswalk_cache "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                     "WHERE entity_kind=? AND external_system=? "
                     f"AND external_id IN ({placeholders})",
                     (entity_kind, external_system, *external_ids),

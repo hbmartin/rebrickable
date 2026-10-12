@@ -1,8 +1,6 @@
 name: Catalog benchmark artifact
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "29 7 * * 0"
 permissions:
   contents: read
 jobs:
@@ -19,14 +17,15 @@ jobs:
       - run: uv sync --all-groups --locked
       - name: Refresh and enforce catalog performance ceilings
         run: |
-          /usr/bin/time -v uv run rebrickable refresh --force --json > refresh.json 2> performance.txt
-          /usr/bin/time -a -v uv run python scripts/benchmark_catalog.py > benchmark.json 2>> performance.txt
+          uv run --locked python scripts/measure_process.py --report refresh-memory.json --stdout refresh.json -- uv run --locked rebrickable refresh --force --json
+          uv run --locked python scripts/measure_process.py --report query-memory.json --stdout benchmark.json -- uv run --locked python scripts/benchmark_catalog.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: catalog-performance
           path: |
-            performance.txt
+            *-memory.json
+            *-memory.txt
             refresh.json
             benchmark.json
           retention-days: 30

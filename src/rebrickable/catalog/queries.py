@@ -37,6 +37,8 @@ T = TypeVar("T")
 
 
 class _SessionProtocol(Protocol):
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     async def _connection(self) -> aiosqlite.Connection: ...
 
 
@@ -62,7 +64,7 @@ class Repository(Generic[T]):
         connection = await self._session._connection()
         row = await (
             await connection.execute(
-                f"SELECT * FROM {self._table} WHERE {self._key}=?",
+                f"SELECT * FROM {self._table} WHERE {self._key}=?",  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 (identifier,),
             )
         ).fetchone()
@@ -80,7 +82,7 @@ class Repository(Generic[T]):
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                f"SELECT * FROM {self._table} ORDER BY {self._order} LIMIT ? OFFSET ?",
+                f"SELECT * FROM {self._table} ORDER BY {self._order} LIMIT ? OFFSET ?",  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 (limit, offset),
             )
         ).fetchall()
@@ -89,7 +91,7 @@ class Repository(Generic[T]):
     async def count(self) -> int:
         connection = await self._session._connection()
         row = await (
-            await connection.execute(f"SELECT COUNT(*) FROM {self._table}")
+            await connection.execute(f"SELECT COUNT(*) FROM {self._table}")  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
@@ -179,7 +181,7 @@ class PartsRepository(Repository[Part]):
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                "SELECT rel_type, child_part_num, parent_part_num "
+                "SELECT rel_type, child_part_num, parent_part_num "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 f"FROM part_relationships WHERE {where} "
                 "ORDER BY rel_type, child_part_num, parent_part_num",
                 values,
@@ -266,7 +268,7 @@ class PartsRepository(Repository[Part]):
                 JOIN latest_inventories li ON li.id=ip.inventory_id
                 JOIN sets s ON s.set_num=li.owner_num
                 JOIN colors c ON c.id=ip.color_id
-                WHERE """
+                WHERE """  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 + " AND ".join(conditions)
                 + """
                 GROUP BY s.set_num, c.id, ip.is_spare, li.version
@@ -318,7 +320,7 @@ class PartsRepository(Repository[Part]):
                 FROM inventory_parts ip
                 JOIN latest_inventories li ON li.id=ip.inventory_id
                 LEFT JOIN sets s ON s.set_num=li.owner_num
-                WHERE ip.part_num=?"""
+                WHERE ip.part_num=?"""  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 + color_clause,
                 values,
             )
@@ -426,7 +428,7 @@ class ThemesRepository(Repository[Theme]):
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                f"WITH RECURSIVE {THEME_LINEAGE_CTE} "
+                f"WITH RECURSIVE {THEME_LINEAGE_CTE} "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 "SELECT t.id, t.name, t.parent_id "
                 "FROM theme_lineage tl JOIN themes t ON t.id=tl.id "
                 "ORDER BY tl.depth DESC",
@@ -441,7 +443,7 @@ class ThemesRepository(Repository[Theme]):
         connection = await self._session._connection()
         rows = await (
             await connection.execute(
-                f"WITH RECURSIVE {THEME_SUBTREE_CTE} "
+                f"WITH RECURSIVE {THEME_SUBTREE_CTE} "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 "SELECT t.id, t.name, t.parent_id "
                 "FROM theme_tree tt JOIN themes t ON t.id=tt.id "
                 "WHERE tt.depth > 0 ORDER BY tt.depth, tt.id",

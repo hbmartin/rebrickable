@@ -13,6 +13,8 @@ from rebrickable.bridge.models import (
 from rebrickable.types import MappingSource, MappingStatus, normalize_ldraw_code
 
 if TYPE_CHECKING:
+    # Type-only reference; the composition root does not import at runtime here.
+    # codeql[py/cyclic-import]
     from rebrickable.session import RebrickableSession
 
 __all__ = [
