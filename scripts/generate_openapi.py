@@ -58,7 +58,7 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
         "",
         f'OPENAPI_SHA256 = "{checksum}"',
         "",
-        "@dataclass(frozen=True, slots=True)",
+        "@dataclass(frozen=True, slots=True, kw_only=True)",
         "class Parameter:",
         "    name: str",
         "    location: str",
@@ -67,7 +67,7 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
         "    default: Any | None",
         "    description: str",
         "",
-        "@dataclass(frozen=True, slots=True)",
+        "@dataclass(frozen=True, slots=True, kw_only=True)",
         "class Operation:",
         "    method: str",
         "    path: str",
@@ -112,15 +112,17 @@ def registry_source(items: list[dict[str, Any]], checksum: str) -> str:
             ).items()
         )
         rendered_details = ", ".join(
-            f"Parameter({name!r}, {location!r}, {schema_type!r}, {required!r}, "
-            f"{default!r}, {description!r})"
+            f"Parameter(name={name!r}, location={location!r}, "
+            f"schema_type={schema_type!r}, required={required!r}, "
+            f"default={default!r}, description={description!r})"
             for name, location, schema_type, required, default, description in details
         )
         rendered_details = f"({rendered_details},)" if rendered_details else "()"
         lines.append(
-            f"    {operation['operation_id']!r}: Operation({operation['method']!r}, {operation['path']!r}, "
-            f"{groups['path']!r}, {(groups['query'] + overlay)!r}, {groups['formData']!r}, {required!r}, "
-            f"{operation['encoding']!r}, {rendered_details}),",
+            f"    {operation['operation_id']!r}: Operation(method={operation['method']!r}, path={operation['path']!r}, "
+            f"path_parameters={groups['path']!r}, query_parameters={(groups['query'] + overlay)!r}, "
+            f"form_parameters={groups['formData']!r}, required_parameters={required!r}, "
+            f"encoding={operation['encoding']!r}, parameter_details={rendered_details}),",
         )
     lines.extend(("}", ""))
     return "\n".join(lines)

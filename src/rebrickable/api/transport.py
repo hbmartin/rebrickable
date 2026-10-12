@@ -10,15 +10,19 @@ import httpx2
 
 class ResponseLike(Protocol):
     @property
-    def status_code(self) -> int: ...
+    def status_code(self) -> int:
+        """Return the HTTP response status code."""
 
     @property
-    def headers(self) -> Mapping[str, str]: ...
+    def headers(self) -> Mapping[str, str]:
+        """Expose the response headers."""
 
     @property
-    def text(self) -> str: ...
+    def text(self) -> str:
+        """Return the decoded response body."""
 
-    def json(self) -> Any: ...
+    def json(self) -> Any:
+        """Parse the response body as JSON."""
 
 
 class AsyncTransport(Protocol):
@@ -31,7 +35,8 @@ class AsyncTransport(Protocol):
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         json: Any | None = None,
-    ) -> ResponseLike: ...
+    ) -> ResponseLike:
+        """Send an asynchronous HTTP request and return its response."""
 
 
 class HttpxTransport:

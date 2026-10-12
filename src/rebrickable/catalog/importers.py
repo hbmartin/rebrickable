@@ -24,7 +24,7 @@ _RGB = re.compile(r"[0-9A-Fa-f]{6}")
 ProgressReporter = Callable[[str, int], None]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DatasetDefinition:
     name: str
     required: tuple[str, ...]
@@ -76,20 +76,20 @@ def _rgb(value: str) -> str:
 
 DATASETS: tuple[DatasetDefinition, ...] = (
     DatasetDefinition(
-        "themes",
-        ("id", "name", "parent_id"),
-        "INSERT INTO themes VALUES (?, ?, ?)",
-        lambda r: (
+        name="themes",
+        required=("id", "name", "parent_id"),
+        insert_sql="INSERT INTO themes VALUES (?, ?, ?)",
+        transform=lambda r: (
             _integer(r["id"]),
             _text(r["name"]),
             _nullable_integer(r["parent_id"]),
         ),
     ),
     DatasetDefinition(
-        "colors",
-        ("id", "name", "rgb", "is_trans", "num_parts", "num_sets", "y1", "y2"),
-        "INSERT INTO colors VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        lambda r: (
+        name="colors",
+        required=("id", "name", "rgb", "is_trans", "num_parts", "num_sets", "y1", "y2"),
+        insert_sql="INSERT INTO colors VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        transform=lambda r: (
             _integer(r["id"]),
             _text(r["name"]),
             _rgb(r["rgb"]),
@@ -101,16 +101,16 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "part_categories",
-        ("id", "name"),
-        "INSERT INTO part_categories VALUES (?, ?)",
-        lambda r: (_integer(r["id"]), _text(r["name"])),
+        name="part_categories",
+        required=("id", "name"),
+        insert_sql="INSERT INTO part_categories VALUES (?, ?)",
+        transform=lambda r: (_integer(r["id"]), _text(r["name"])),
     ),
     DatasetDefinition(
-        "parts",
-        ("part_num", "name", "part_cat_id", "part_material"),
-        "INSERT INTO parts VALUES (?, ?, ?, ?)",
-        lambda r: (
+        name="parts",
+        required=("part_num", "name", "part_cat_id", "part_material"),
+        insert_sql="INSERT INTO parts VALUES (?, ?, ?, ?)",
+        transform=lambda r: (
             _text(r["part_num"]),
             _text(r["name"]),
             _integer(r["part_cat_id"]),
@@ -118,20 +118,20 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "part_relationships",
-        ("rel_type", "child_part_num", "parent_part_num"),
-        "INSERT INTO part_relationships VALUES (?, ?, ?)",
-        lambda r: (
+        name="part_relationships",
+        required=("rel_type", "child_part_num", "parent_part_num"),
+        insert_sql="INSERT INTO part_relationships VALUES (?, ?, ?)",
+        transform=lambda r: (
             _text(r["rel_type"]),
             _text(r["child_part_num"]),
             _text(r["parent_part_num"]),
         ),
     ),
     DatasetDefinition(
-        "elements",
-        ("element_id", "part_num", "color_id", "design_id"),
-        "INSERT INTO elements VALUES (?, ?, ?, ?)",
-        lambda r: (
+        name="elements",
+        required=("element_id", "part_num", "color_id", "design_id"),
+        insert_sql="INSERT INTO elements VALUES (?, ?, ?, ?)",
+        transform=lambda r: (
             _text(r["element_id"]),
             _text(r["part_num"]),
             _integer(r["color_id"]),
@@ -139,10 +139,10 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "sets",
-        ("set_num", "name", "year", "theme_id", "num_parts", "img_url"),
-        "INSERT INTO sets VALUES (?, ?, ?, ?, ?, ?)",
-        lambda r: (
+        name="sets",
+        required=("set_num", "name", "year", "theme_id", "num_parts", "img_url"),
+        insert_sql="INSERT INTO sets VALUES (?, ?, ?, ?, ?, ?)",
+        transform=lambda r: (
             _text(r["set_num"]),
             _text(r["name"]),
             _integer(r["year"]),
@@ -152,10 +152,10 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "minifigs",
-        ("fig_num", "name", "num_parts", "img_url"),
-        "INSERT INTO minifigs VALUES (?, ?, ?, ?)",
-        lambda r: (
+        name="minifigs",
+        required=("fig_num", "name", "num_parts", "img_url"),
+        insert_sql="INSERT INTO minifigs VALUES (?, ?, ?, ?)",
+        transform=lambda r: (
             _text(r["fig_num"]),
             _text(r["name"]),
             _quantity(r["num_parts"]),
@@ -163,16 +163,27 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "inventories",
-        ("id", "version", "set_num"),
-        "INSERT INTO inventories VALUES (?, ?, ?)",
-        lambda r: (_integer(r["id"]), _integer(r["version"]), _text(r["set_num"])),
+        name="inventories",
+        required=("id", "version", "set_num"),
+        insert_sql="INSERT INTO inventories VALUES (?, ?, ?)",
+        transform=lambda r: (
+            _integer(r["id"]),
+            _integer(r["version"]),
+            _text(r["set_num"]),
+        ),
     ),
     DatasetDefinition(
-        "inventory_parts",
-        ("inventory_id", "part_num", "color_id", "quantity", "is_spare", "img_url"),
-        "INSERT INTO inventory_parts VALUES (?, ?, ?, ?, ?, ?)",
-        lambda r: (
+        name="inventory_parts",
+        required=(
+            "inventory_id",
+            "part_num",
+            "color_id",
+            "quantity",
+            "is_spare",
+            "img_url",
+        ),
+        insert_sql="INSERT INTO inventory_parts VALUES (?, ?, ?, ?, ?, ?)",
+        transform=lambda r: (
             _integer(r["inventory_id"]),
             _text(r["part_num"]),
             _integer(r["color_id"]),
@@ -182,20 +193,20 @@ DATASETS: tuple[DatasetDefinition, ...] = (
         ),
     ),
     DatasetDefinition(
-        "inventory_sets",
-        ("inventory_id", "set_num", "quantity"),
-        "INSERT INTO inventory_sets VALUES (?, ?, ?)",
-        lambda r: (
+        name="inventory_sets",
+        required=("inventory_id", "set_num", "quantity"),
+        insert_sql="INSERT INTO inventory_sets VALUES (?, ?, ?)",
+        transform=lambda r: (
             _integer(r["inventory_id"]),
             _text(r["set_num"]),
             _quantity(r["quantity"]),
         ),
     ),
     DatasetDefinition(
-        "inventory_minifigs",
-        ("inventory_id", "fig_num", "quantity"),
-        "INSERT INTO inventory_minifigs VALUES (?, ?, ?)",
-        lambda r: (
+        name="inventory_minifigs",
+        required=("inventory_id", "fig_num", "quantity"),
+        insert_sql="INSERT INTO inventory_minifigs VALUES (?, ?, ?)",
+        transform=lambda r: (
             _integer(r["inventory_id"]),
             _text(r["fig_num"]),
             _quantity(r["quantity"]),

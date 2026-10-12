@@ -122,15 +122,23 @@ async def test_substitution_bounds_and_empty_validation(catalog_config: Config) 
     async with await RebrickableSession.connect(catalog_config) as session:
         for kwargs in ({"max_depth": -1}, {"max_candidates": -1}):
             with pytest.raises(ValueError, match="negative"):
-                await session.substitutes(PartRef("rebrickable", "3001"), **kwargs)
-        assert await session.substitutes(PartRef("rebrickable", "missing")) == ()
+                await session.substitutes(
+                    PartRef(system="rebrickable", value="3001"), **kwargs
+                )
         assert (
-            await session.substitutes(PartRef("rebrickable", "3001"), max_depth=0) == ()
+            await session.substitutes(PartRef(system="rebrickable", value="missing"))
+            == ()
+        )
+        assert (
+            await session.substitutes(
+                PartRef(system="rebrickable", value="3001"), max_depth=0
+            )
+            == ()
         )
         assert (
             len(
                 await session.substitutes(
-                    PartRef("rebrickable", "3001"),
+                    PartRef(system="rebrickable", value="3001"),
                     direction="children",
                     max_candidates=1,
                 )
@@ -140,7 +148,7 @@ async def test_substitution_bounds_and_empty_validation(catalog_config: Config) 
         assert (
             len(
                 await session.substitutes(
-                    PartRef("rebrickable", "3002"),
+                    PartRef(system="rebrickable", value="3002"),
                     direction="parents",
                     max_candidates=1,
                 )
@@ -149,7 +157,7 @@ async def test_substitution_bounds_and_empty_validation(catalog_config: Config) 
         )
         assert (
             await session.substitutes(
-                PartRef("rebrickable", "3001"), include_mold_variants=False
+                PartRef(system="rebrickable", value="3001"), include_mold_variants=False
             )
             != ()
         )
@@ -176,7 +184,7 @@ def test_integer_subclass_normalization_is_preserved(
 ) -> None:
     from rebrickable import ColorRef, cli  # noqa: PLC0415 - public contracts
 
-    color = ColorRef("rebrickable", True)
+    color = ColorRef(system="rebrickable", value=True)
     assert color.value == 1
     assert type(color.value) is int
     status = cli.main(["url", "part", "3001"])

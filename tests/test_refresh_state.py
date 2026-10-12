@@ -3,21 +3,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from filelock import FileLock, Timeout
 
 from rebrickable import CatalogStatus, Config, RebrickableSession, RefreshOutcome
+from rebrickable import refresh as refresh_module
 from rebrickable.catalog.database import CatalogPaths, catalog_state
 from rebrickable.errors import CatalogImportError, DatasetIntegrityError, DownloadError
 from rebrickable.progress import ProgressEvent, ProgressStage
-from rebrickable.refresh import _atomic_json, _download_one, refresh_catalog
+from rebrickable.refresh import (
+    _atomic_json,
+    _download_one,
+    _prune_abandoned_staging,
+    _prune_snapshots,
+    refresh_catalog,
+)
 
 
 def snapshot_sources(config: Config) -> dict[str, Path]:
@@ -518,3 +528,101 @@ def test_atomic_json_replaces_and_cleans_failure(tmp_path: Path, monkeypatch) ->
     with pytest.raises(OSError):
         _atomic_json(target, {"a": 2})
     assert not tuple(tmp_path.glob(".value.json.*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_downloader_revalidation_headers_and_forced_download(
+    catalog_config: Config, tmp_path: Path, *, force: bool
+) -> None:
+    previous = replace(
+        (await catalog_state(catalog_config)).files[0],
+        etag='"cached"',
+        last_modified="Sat, 01 Aug 2026 00:00:00 GMT",
+    )
+    client = StreamClient(StreamResponse(200 if force else 304, (b"new data",)))
+    destination = tmp_path / "dataset.csv.gz"
+    changed, metadata = await _download_one(
+        client,
+        url=previous.url,
+        destination=destination,
+        previous=previous,
+        force=force,
+        callback=None,
+    )
+
+    assert changed is force
+    if force:
+        assert client.headers == {"Accept-Encoding": "identity"}
+        assert destination.read_bytes() == b"new data"
+        assert metadata["byte_length"] == 8
+    else:
+        assert client.headers == {
+            "Accept-Encoding": "identity",
+            "If-None-Match": previous.etag,
+            "If-Modified-Since": previous.last_modified,
+        }
+        assert metadata == asdict(previous)
+        assert not destination.exists()
+
+
+def test_staging_cleanup_preserves_recent_and_unrelated_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 2_000_000.0
+    original_time = time.time
+    monkeypatch.setattr(refresh_module, "time", SimpleNamespace(time=lambda: now))
+    assert time.time is original_time
+    expired = tmp_path / "refresh-expired"
+    recent = tmp_path / "refresh-recent"
+    unrelated = tmp_path / "other-cache"
+    for directory in (expired, recent, unrelated):
+        directory.mkdir()
+        (directory / "contents").write_text("preserve unless expired staging")
+    for directory in (expired, unrelated):
+        os.utime(directory, (now - 86_401, now - 86_401))
+    os.utime(recent, (now - 86_400, now - 86_400))
+    regular_file = tmp_path / "refresh-file"
+    regular_file.write_text("keep")
+
+    _prune_abandoned_staging(tmp_path)
+
+    assert not expired.exists()
+    assert (recent / "contents").is_file()
+    assert (unrelated / "contents").is_file()
+    assert regular_file.read_text() == "keep"
+    assert time.time is original_time
+
+
+def test_staging_cleanup_tolerates_removal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "refresh-locked"
+    staging.mkdir()
+    os.utime(staging, (0, 0))
+    attempted: list[Path] = []
+
+    def deny_removal(path: Path) -> None:
+        attempted.append(path)
+        raise PermissionError("staging directory is locked")
+
+    monkeypatch.setattr("rebrickable.refresh.shutil.rmtree", deny_removal)
+    _prune_abandoned_staging(tmp_path)
+    assert attempted == [staging]
+    assert staging.is_dir()
+
+
+def test_snapshot_retention_does_not_count_partial_transfers(
+    catalog_config: Config,
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    older = paths.snapshots_dir / "older-snapshot"
+    incoming = paths.snapshots_dir / ".incoming-stale"
+    older.mkdir()
+    incoming.mkdir()
+
+    _prune_snapshots(paths, "fixture-snapshot", retain=3)
+
+    assert paths.database_for("fixture-snapshot").is_file()
+    assert older.is_dir()
+    assert not incoming.exists()

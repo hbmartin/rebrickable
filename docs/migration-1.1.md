@@ -306,6 +306,10 @@ snapshots.
 
 ## Public imports and packaging
 
+Public dataclass constructors continue to accept positional and named arguments.
+Existing positional class patterns and saved structured API exceptions remain
+compatible; no constructor migration is required.
+
 Mutation request models and `MutationResult` are now importable directly from
 `rebrickable`, as are the new catalog analytics and inventory-history models.
 Imports from their original submodules remain valid.

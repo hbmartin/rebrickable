@@ -277,6 +277,23 @@ distribution to avoid conflicts. To get machine-readable findings, run
 Advisory findings appear in the output; add `--strict` to include them in the
 score.
 
+The separate [garuff](https://github.com/gahjelle/garuff) workflow is advisory
+while this experimental checker is evaluated. It runs on Python 3.14 in an
+isolated tool environment, pinned to a reviewed Git revision, and uploads its
+output and exit code as the `garuff-report` artifact. Findings and tool failures
+do not block the existing quality checks. Run the same check locally with:
+
+```console
+uv tool run --python 3.14 --from "garuff @ git+https://github.com/gahjelle/garuff@7d126c00f13b4d94f39f1107934089241ab7a6a1" garuff check src scripts tests docs
+```
+
+Exit `0` means clean, `1` includes findings or parse/suppression errors, and `2`
+includes configuration or command errors. Installation failures and crashes
+also need review. Project-specific rule exclusions and evaluation notes are in
+[the agent recipes](https://hbmartin.github.io/rebrickable/agent-recipes/#experimental-garuff-checks). Review
+the upstream rule changes before updating the pinned revision in both places;
+do not apply automatic fixes across public APIs or generated files.
+
 Contributions should include focused tests, pass the commands above, preserve
 the async-only API, and avoid network access in unit tests. Open an issue before
 large compatibility or data-model changes. Report vulnerabilities privately

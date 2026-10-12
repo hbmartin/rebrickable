@@ -305,15 +305,22 @@ class RebrickableSession:
         state = self._opened_state
         provenance = (
             Provenance(
-                ProvenanceSource.LOCAL_SNAPSHOT,
-                state.snapshot_id if state and state.snapshot_id else "unknown",
+                source=ProvenanceSource.LOCAL_SNAPSHOT,
+                reference=state.snapshot_id
+                if state and state.snapshot_id
+                else "unknown",
             ),
         )
         results: list[PartColorAvailability] = []
         for index, (part_num, color_id, confidence) in enumerate(resolved):
             if part_num is None or color_id is None:
                 results.append(
-                    PartColorAvailability(False, part_num, color_id, confidence="none")
+                    PartColorAvailability(
+                        available=False,
+                        rebrickable_part=part_num,
+                        rebrickable_color=color_id,
+                        confidence="none",
+                    )
                 )
                 continue
             evidence = evidence_by_index[index]
@@ -349,20 +356,20 @@ class RebrickableSession:
         if part.system is PartSystem.REBRICKABLE:
             entity = await self.parts.get(part.value)
             return PartMatch(
-                part.value,
-                part.value if entity is not None else None,
-                MappingStatus.RESOLVED
+                source_identifier=part.value,
+                target_identifier=part.value if entity is not None else None,
+                status=MappingStatus.RESOLVED
                 if entity is not None
                 else MappingStatus.UNRESOLVED,
-                MappingSource.EXACT_CANONICAL_ID
+                source=MappingSource.EXACT_CANONICAL_ID
                 if entity is not None
                 else MappingSource.NONE,
-                1.0 if entity is not None else 0.0,
-                (),
-                "canonical Rebrickable identifier"
+                confidence=1.0 if entity is not None else 0.0,
+                candidates=(),
+                explanation="canonical Rebrickable identifier"
                 if entity is not None
                 else "part is absent from the active snapshot",
-                snapshot,
+                snapshot_id=snapshot,
             )
         connection = await self._connection()
         rows = tuple(
@@ -378,26 +385,31 @@ class RebrickableSession:
             ).fetchall()
         )
         candidates = tuple(
-            MatchCandidate(str(row[0]), None, "API-confirmed external ID", 1.0)
+            MatchCandidate(
+                identifier=str(row[0]),
+                name=None,
+                reason="API-confirmed external ID",
+                confidence=1.0,
+            )
             for row in rows
         )
         return PartMatch(
-            part.value,
-            str(rows[0][0]) if len(rows) == 1 else None,
-            MappingStatus.RESOLVED
+            source_identifier=part.value,
+            target_identifier=str(rows[0][0]) if len(rows) == 1 else None,
+            status=MappingStatus.RESOLVED
             if len(rows) == 1
             else MappingStatus.AMBIGUOUS
             if rows
             else MappingStatus.UNRESOLVED,
-            MappingSource.API_EXTERNAL_ID if rows else MappingSource.NONE,
-            1.0 if len(rows) == 1 else 0.0,
-            () if len(rows) == 1 else candidates,
-            "API-confirmed external identifier"
+            source=MappingSource.API_EXTERNAL_ID if rows else MappingSource.NONE,
+            confidence=1.0 if len(rows) == 1 else 0.0,
+            candidates=() if len(rows) == 1 else candidates,
+            explanation="API-confirmed external identifier"
             if len(rows) == 1
             else "external identifier is ambiguous"
             if rows
             else "no offline mapping",
-            snapshot,
+            snapshot_id=snapshot,
         )
 
     async def resolve_color(self, color: ColorRef) -> ColorMatch:
@@ -409,20 +421,20 @@ class RebrickableSession:
         if color.system is ColorSystem.REBRICKABLE:
             entity = await self.colors.get(color.value)
             return ColorMatch(
-                color.value,
-                color.value if entity is not None else None,
-                MappingStatus.RESOLVED
+                source_identifier=color.value,
+                target_identifier=color.value if entity is not None else None,
+                status=MappingStatus.RESOLVED
                 if entity is not None
                 else MappingStatus.UNRESOLVED,
-                MappingSource.EXACT_CANONICAL_ID
+                source=MappingSource.EXACT_CANONICAL_ID
                 if entity is not None
                 else MappingSource.NONE,
-                1.0 if entity is not None else 0.0,
-                (),
-                "canonical Rebrickable identifier"
+                confidence=1.0 if entity is not None else 0.0,
+                candidates=(),
+                explanation="canonical Rebrickable identifier"
                 if entity is not None
                 else "color is absent from the active snapshot",
-                snapshot,
+                snapshot_id=snapshot,
             )
         connection = await self._connection()
         rows = tuple(
@@ -438,26 +450,31 @@ class RebrickableSession:
             ).fetchall()
         )
         candidates = tuple(
-            MatchCandidate(str(row[0]), None, "API-confirmed external ID", 1.0)
+            MatchCandidate(
+                identifier=str(row[0]),
+                name=None,
+                reason="API-confirmed external ID",
+                confidence=1.0,
+            )
             for row in rows
         )
         return ColorMatch(
-            color.value,
-            int(rows[0][0]) if len(rows) == 1 else None,
-            MappingStatus.RESOLVED
+            source_identifier=color.value,
+            target_identifier=int(rows[0][0]) if len(rows) == 1 else None,
+            status=MappingStatus.RESOLVED
             if len(rows) == 1
             else MappingStatus.AMBIGUOUS
             if rows
             else MappingStatus.UNRESOLVED,
-            MappingSource.API_EXTERNAL_ID if rows else MappingSource.NONE,
-            1.0 if len(rows) == 1 else 0.0,
-            () if len(rows) == 1 else candidates,
-            "API-confirmed external identifier"
+            source=MappingSource.API_EXTERNAL_ID if rows else MappingSource.NONE,
+            confidence=1.0 if len(rows) == 1 else 0.0,
+            candidates=() if len(rows) == 1 else candidates,
+            explanation="API-confirmed external identifier"
             if len(rows) == 1
             else "external identifier is ambiguous"
             if rows
             else "no offline mapping",
-            snapshot,
+            snapshot_id=snapshot,
         )
 
     async def external_ids(self, part: PartRef) -> tuple[ExternalIdentifier, ...]:
@@ -496,17 +513,21 @@ class RebrickableSession:
         )
         values = [
             ExternalIdentifier(
-                str(row[0]),
-                str(row[1]),
-                Provenance(ProvenanceSource.API_OPERATION, str(row[2])),
+                system=str(row[0]),
+                value=str(row[1]),
+                provenance=Provenance(
+                    source=ProvenanceSource.API_OPERATION, reference=str(row[2])
+                ),
             )
             for row in cached
         ]
         values.extend(
             ExternalIdentifier(
-                str(row[0]),
-                str(row[1]),
-                Provenance(ProvenanceSource.USER_OVERRIDE, snapshot),
+                system=str(row[0]),
+                value=str(row[1]),
+                provenance=Provenance(
+                    source=ProvenanceSource.USER_OVERRIDE, reference=snapshot
+                ),
             )
             for row in overridden
         )
@@ -524,8 +545,8 @@ class RebrickableSession:
     ) -> tuple[SubstitutionEvidence, ...]:
         """Traverse the local relationship graph and retain why each candidate exists.
 
-        Traversal stops ``max_depth`` hops from the root and the evidence list
-        is truncated at ``max_candidates`` entries.
+        Traversal stops `max_depth` hops from the root and the evidence list
+        is truncated at `max_candidates` entries.
         """
         if direction not in {"both", "parents", "children"}:
             raise ValueError("direction must be both, parents, or children")
@@ -581,19 +602,23 @@ class RebrickableSession:
                 pending.append((candidate, candidate_path, depth + 1))
                 results.append(
                     SubstitutionEvidence(
-                        PartRef(PartSystem.REBRICKABLE, root),
-                        PartRef(PartSystem.REBRICKABLE, candidate),
-                        relationship,
-                        raw,
-                        tuple(
-                            PartRef(PartSystem.REBRICKABLE, value)
+                        source=PartRef(system=PartSystem.REBRICKABLE, value=root),
+                        candidate=PartRef(
+                            system=PartSystem.REBRICKABLE, value=candidate
+                        ),
+                        relationship=relationship,
+                        raw_relationship=raw,
+                        path=tuple(
+                            PartRef(system=PartSystem.REBRICKABLE, value=value)
                             for value in candidate_path
                         ),
-                        relationship
+                        changes_appearance=relationship
                         in {RelationshipType.PRINT, RelationshipType.PATTERN},
-                        relationship is RelationshipType.SUB_PART,
-                        "relationship-derived candidate; physical interchangeability is not guaranteed",
-                        Provenance(ProvenanceSource.LOCAL_SNAPSHOT, snapshot),
+                        changes_geometry=relationship is RelationshipType.SUB_PART,
+                        explanation="relationship-derived candidate; physical interchangeability is not guaranteed",
+                        provenance=Provenance(
+                            source=ProvenanceSource.LOCAL_SNAPSHOT, reference=snapshot
+                        ),
                     )
                 )
                 if len(results) >= max_candidates:
@@ -619,13 +644,18 @@ class RebrickableSession:
                 and result.rebrickable_color is not None
             ):
                 candidates = await self.substitutes(
-                    PartRef(PartSystem.REBRICKABLE, result.rebrickable_part)
+                    PartRef(
+                        system=PartSystem.REBRICKABLE, value=result.rebrickable_part
+                    )
                 )
                 usable: list[SubstitutionEvidence] = []
                 for candidate in candidates:
                     availability = await self.check_part_color(
                         candidate.candidate,
-                        ColorRef(ColorSystem.REBRICKABLE, result.rebrickable_color),
+                        ColorRef(
+                            system=ColorSystem.REBRICKABLE,
+                            value=result.rebrickable_color,
+                        ),
                     )
                     if availability.available:
                         usable.append(candidate)
@@ -634,20 +664,22 @@ class RebrickableSession:
                     notes.append("relationship-only substitute available")
             rows.append(
                 BomValidationRow(
-                    item,
-                    result.available,
-                    result.rebrickable_part,
-                    result.rebrickable_color,
-                    result.confidence,
-                    tuple(notes),
-                    substitutions,
+                    item=item,
+                    available=result.available,
+                    rebrickable_part=result.rebrickable_part,
+                    rebrickable_color=result.rebrickable_color,
+                    confidence=result.confidence,
+                    notes=tuple(notes),
+                    substitutions=substitutions,
                 ),
             )
         return BomValidationReport(
-            tuple(rows),
-            bom.total_quantity,
-            bom.unique_count,
-            sum(row.available and row.confidence.startswith("exact/") for row in rows),
-            sum(not row.available for row in rows),
-            sum(bool(row.substitutions) for row in rows),
+            rows=tuple(rows),
+            total_quantity=bom.total_quantity,
+            unique_count=bom.unique_count,
+            exact_count=sum(
+                row.available and row.confidence.startswith("exact/") for row in rows
+            ),
+            unavailable_count=sum(not row.available for row in rows),
+            substitutable_count=sum(bool(row.substitutions) for row in rows),
         )

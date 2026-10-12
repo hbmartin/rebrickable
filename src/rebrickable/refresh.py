@@ -105,9 +105,9 @@ async def _download_one(
                     _emit(
                         callback,
                         ProgressEvent(
-                            ProgressStage.DOWNLOAD,
-                            destination.name,
-                            length,
+                            stage=ProgressStage.DOWNLOAD,
+                            dataset=destination.name,
+                            current=length,
                             unit=ProgressUnit.BYTES,
                             path=destination,
                         ),
@@ -319,13 +319,16 @@ async def _refresh_attempt(
             if prior_state.snapshot_id is None or prior_state.retrieved_at is None:
                 raise CatalogImportError("unchanged refresh has no active snapshot")
             return RefreshReport(
-                RefreshOutcome.UNCHANGED,
-                prior_state.snapshot_id,
-                prior_state.retrieved_at,
-                prior_state.files,
+                outcome=RefreshOutcome.UNCHANGED,
+                snapshot_id=prior_state.snapshot_id,
+                retrieved_at=prior_state.retrieved_at,
+                files=prior_state.files,
             )
         for definition in DATASETS:
-            _emit(callback, ProgressEvent(ProgressStage.VALIDATE, definition.name))
+            _emit(
+                callback,
+                ProgressEvent(stage=ProgressStage.VALIDATE, dataset=definition.name),
+            )
             await run_in_thread(inspect_header, file_paths[definition.name], definition)
         database = staging / config.database_path.name
         loop = asyncio.get_running_loop()
@@ -335,9 +338,9 @@ async def _refresh_attempt(
                 _emit,
                 callback,
                 ProgressEvent(
-                    ProgressStage.IMPORT,
-                    dataset,
-                    count,
+                    stage=ProgressStage.IMPORT,
+                    dataset=dataset,
+                    current=count,
                     unit=ProgressUnit.ROWS,
                 ),
             )
@@ -377,7 +380,8 @@ async def _refresh_attempt(
         paths.snapshots_dir.mkdir(parents=True, exist_ok=True)
         destination = paths.snapshots_dir / snapshot_id
         _emit(
-            callback, ProgressEvent(ProgressStage.PROMOTE, message="promoting snapshot")
+            callback,
+            ProgressEvent(stage=ProgressStage.PROMOTE, message="promoting snapshot"),
         )
         lock = FileLock(
             paths.lock_file,
@@ -408,8 +412,15 @@ async def _refresh_attempt(
             )
         finally:
             lock.release()
-        report = RefreshReport(RefreshOutcome.UPDATED, snapshot_id, now, fingerprints)
-        _emit(callback, ProgressEvent(ProgressStage.DONE, message="catalog ready"))
+        report = RefreshReport(
+            outcome=RefreshOutcome.UPDATED,
+            snapshot_id=snapshot_id,
+            retrieved_at=now,
+            files=fingerprints,
+        )
+        _emit(
+            callback, ProgressEvent(stage=ProgressStage.DONE, message="catalog ready")
+        )
         return report
     finally:
         for leftover in (staging, incoming):

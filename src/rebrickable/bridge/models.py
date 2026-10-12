@@ -27,7 +27,7 @@ class LDrawBomItem:
             raise ValueError("not a pyldraw3 BomRow") from exc
         if color is None:
             raise ValueError("LDraw BOM row has no color code")
-        return cls(part, int(color), quantity)
+        return cls(part_num=part, color_code=int(color), quantity=quantity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +48,12 @@ class LDrawColorInfo:
             raise ValueError("not a pyldraw3 Colour") from exc
         if code is None or name is None or rgb is None:
             raise ValueError("pyldraw3 Colour lacks code, name, or RGB")
-        return cls(int(code), str(name), str(rgb), 255 if alpha is None else int(alpha))
+        return cls(
+            code=int(code),
+            name=str(name),
+            rgb=str(rgb),
+            alpha=255 if alpha is None else int(alpha),
+        )
 
 
 @dataclass(frozen=True, slots=True)

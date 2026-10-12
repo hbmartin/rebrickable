@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import pickle
 import socket
 import subprocess
 import sys
@@ -16,9 +17,18 @@ from unittest.mock import patch
 from catalog_fixture import build_catalog_config  # ty: ignore[unresolved-import]
 
 import rebrickable
-from rebrickable import Bom, Config, RebrickableSession
+from rebrickable import (
+    ApiThrottledError,
+    Bom,
+    ColorRef,
+    Config,
+    LDrawBomItem,
+    PartRef,
+    RebrickableSession,
+)
 from rebrickable.api.models import ApiPart
 from rebrickable.errors import OptionalDependencyError
+from rebrickable.progress import ProgressEvent, ProgressStage
 
 
 def check_installation() -> Path:
@@ -34,6 +44,13 @@ def check_installation() -> Path:
         ).extra["custom"]
         == 42
     )
+    assert Config(Path("catalog.sqlite")).database_path == Path("catalog.sqlite")
+    assert PartRef("ldraw", "3001.dat") == PartRef(system="ldraw", value="3001")
+    assert ColorRef("ldraw", "4") == ColorRef(system="ldraw", value=4)
+    assert LDrawBomItem("3001.dat", 4, 2).quantity == 2
+    assert ProgressEvent(ProgressStage.DOWNLOAD).stage is ProgressStage.DOWNLOAD
+    error = ApiThrottledError(429, "/parts/", "parts", "slow down")
+    assert pickle.loads(pickle.dumps(error)) == error  # noqa: S301 - owned smoke value
     return package
 
 

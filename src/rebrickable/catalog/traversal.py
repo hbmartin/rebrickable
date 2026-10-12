@@ -1,8 +1,8 @@
 """Depth-bounded, cycle-safe hierarchy traversal SQL shared by catalog queries.
 
 Each CTE binds one parameter (the seed theme id) and tracks the recursion
-depth plus a ``/id/``-delimited path of visited ids: expansion stops at
-``MAX_TRAVERSAL_DEPTH`` levels and never revisits an id already on the path,
+depth plus a `/id/`-delimited path of visited ids: expansion stops at
+`MAX_TRAVERSAL_DEPTH` levels and never revisits an id already on the path,
 so corrupt parent links that form cycles terminate without duplicate rows.
 """
 

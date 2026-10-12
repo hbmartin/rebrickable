@@ -9,7 +9,7 @@ _replace = os.replace
 
 
 def durable_replace(source: Path, target: Path) -> None:
-    """Atomically replace ``target`` and durably record its directory entry."""
+    """Atomically replace `target` and durably record its directory entry."""
     _replace(source, target)
     if os.name == "nt":
         return

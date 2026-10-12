@@ -16,7 +16,7 @@ from rebrickable.data import OPENAPI_RESOURCE
 from rebrickable.errors import ApiAuthenticationError, UnsafePaginationUrlError
 
 
-@dataclass
+@dataclass(kw_only=True)
 class FakeResponse:
     payload: Any
     status_code: int = 200
@@ -72,14 +72,14 @@ def client(transport: FakeTransport) -> RebrickableClient:
 async def test_list_get_auth_and_extra_fields() -> None:
     transport = FakeTransport(
         FakeResponse(
-            {
+            payload={
                 "count": 1,
                 "next": None,
                 "previous": None,
                 "results": [{"id": 4, "name": "Red", "new_field": 1}],
             }
         ),
-        FakeResponse({"part_num": "3001", "name": "Brick"}),
+        FakeResponse(payload={"part_num": "3001", "name": "Brick"}),
     )
     api = client(transport)
     page = await api.list_colors(page_size=1000)
@@ -95,7 +95,7 @@ async def test_list_get_auth_and_extra_fields() -> None:
 async def test_read_requests_support_legacy_custom_transports() -> None:
     transport = LegacyTransport(
         FakeResponse(
-            {
+            payload={
                 "count": 1,
                 "next": None,
                 "previous": None,
@@ -119,7 +119,7 @@ async def test_read_requests_support_legacy_custom_transports() -> None:
 async def test_iterator_rejects_unsafe_next_url() -> None:
     transport = FakeTransport(
         FakeResponse(
-            {
+            payload={
                 "count": 1,
                 "next": "https://evil.test/api/v3/lego/colors/?page=2",
                 "previous": None,
@@ -137,8 +137,8 @@ async def test_iterator_rejects_unsafe_next_url() -> None:
 @pytest.mark.asyncio
 async def test_error_redaction_and_form_encoding() -> None:
     transport = FakeTransport(
-        FakeResponse({"detail": "bad key"}, status_code=401),
-        FakeResponse({"user_token": "created-token"}),
+        FakeResponse(payload={"detail": "bad key"}, status_code=401),
+        FakeResponse(payload={"user_token": "created-token"}),
     )
     api = client(transport)
     with pytest.raises(ApiAuthenticationError) as captured:

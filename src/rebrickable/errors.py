@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, override
 
+type _ApiErrorValues = tuple[int | None, str, str, str, str | None, float | None]
+
 
 class RebrickableError(Exception):
     """Base class for all documented library failures."""
@@ -79,6 +81,22 @@ class ApiError(RebrickableError):
         return f"{self.operation_id} failed ({status}): {self.detail}"
 
 
+def _rebuild_api_error(
+    error_type: type[ApiError],
+    values: _ApiErrorValues,
+) -> ApiError:
+    """Load errors pickled by the interim keyword-only constructor cleanup."""
+    status, path_template, operation_id, detail, request_id, retry_after = values
+    return error_type(
+        status=status,
+        path_template=path_template,
+        operation_id=operation_id,
+        detail=detail,
+        request_id=request_id,
+        retry_after=retry_after,
+    )
+
+
 class ApiAuthenticationError(ApiError):
     """The API key was rejected."""
 
@@ -111,8 +129,14 @@ class ApiDecodeError(ApiError):
         payload: Any | None = None,
     ) -> None:
         del payload  # Never retain or repr a potentially sensitive response.
-        super().__init__(None, path_template, operation_id, detail)
+        super().__init__(
+            status=None,
+            path_template=path_template,
+            operation_id=operation_id,
+            detail=detail,
+        )
 
+    @override
     def __reduce__(self) -> tuple[object, tuple[str, str, str]]:
         return (
             _rebuild_api_decode_error,

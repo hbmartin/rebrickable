@@ -24,21 +24,35 @@ from rebrickable.errors import InventoryCycleError, InventoryNotFoundError
 
 
 def _part(row: aiosqlite.Row) -> Part:
-    return Part(row["part_num"], row["part_name"], row["part_cat_id"], row["material"])
+    return Part(
+        part_num=row["part_num"],
+        name=row["part_name"],
+        category_id=row["part_cat_id"],
+        material=row["material"],
+    )
 
 
 def _color(row: aiosqlite.Row) -> Color:
     if row["color_name"] is None:
-        return Color(row["color_id"], "Unknown", "000000", False, 0, 0, None, None)
+        return Color(
+            id=row["color_id"],
+            name="Unknown",
+            rgb="000000",
+            is_trans=False,
+            num_parts=0,
+            num_sets=0,
+            year_from=None,
+            year_to=None,
+        )
     return Color(
-        row["color_id"],
-        row["color_name"],
-        row["rgb"],
-        bool(row["is_trans"]),
-        row["color_num_parts"],
-        row["color_num_sets"],
-        row["year_from"],
-        row["year_to"],
+        id=row["color_id"],
+        name=row["color_name"],
+        rgb=row["rgb"],
+        is_trans=bool(row["is_trans"]),
+        num_parts=row["color_num_parts"],
+        num_sets=row["color_num_sets"],
+        year_from=row["year_from"],
+        year_to=row["year_to"],
     )
 
 
@@ -100,14 +114,14 @@ async def load_inventory(
         )
     parts = [
         InventoryPart(
-            _part(part_row),
-            _color(part_row),
-            int(part_row["quantity"]),
-            bool(part_row["is_spare"]),
-            tuple(
+            part=_part(part_row),
+            color=_color(part_row),
+            quantity=int(part_row["quantity"]),
+            is_spare=bool(part_row["is_spare"]),
+            element_ids=tuple(
                 elements_by_key.get((part_row["part_num"], part_row["color_id"]), ())
             ),
-            part_row["image_url"],
+            image_url=part_row["image_url"],
         )
         for part_row in part_rows
     ]
@@ -123,15 +137,15 @@ async def load_inventory(
     ).fetchall()
     sets = tuple(
         InventorySet(
-            Set(
-                item["set_num"],
-                item["name"],
-                item["year"],
-                item["theme_id"],
-                item["num_parts"],
-                item["image_url"],
+            set=Set(
+                set_num=item["set_num"],
+                name=item["name"],
+                year=item["year"],
+                theme_id=item["theme_id"],
+                num_parts=item["num_parts"],
+                image_url=item["image_url"],
             ),
-            item["quantity"],
+            quantity=item["quantity"],
         )
         for item in set_rows
     )
@@ -147,14 +161,23 @@ async def load_inventory(
     ).fetchall()
     minifigs = tuple(
         InventoryMinifig(
-            Minifig(
-                item["fig_num"], item["name"], item["num_parts"], item["image_url"]
+            minifig=Minifig(
+                fig_num=item["fig_num"],
+                name=item["name"],
+                num_parts=item["num_parts"],
+                image_url=item["image_url"],
             ),
-            item["quantity"],
+            quantity=item["quantity"],
         )
         for item in fig_rows
     )
-    return Inventory(owner_num, version, tuple(parts), sets, minifigs)
+    return Inventory(
+        owner_num=owner_num,
+        version=version,
+        parts=tuple(parts),
+        sets=sets,
+        minifigs=minifigs,
+    )
 
 
 async def bill_of_materials(
@@ -183,7 +206,11 @@ async def bill_of_materials(
             except InventoryNotFoundError as exc:
                 if strict or not path:
                     raise
-                skipped.append(SkippedInventory(owner, current_path, str(exc)))
+                skipped.append(
+                    SkippedInventory(
+                        owner_num=owner, owner_path=current_path, reason=str(exc)
+                    )
+                )
                 return
             inventory_cache[owner] = inventory
         for item in inventory.parts:
@@ -193,7 +220,9 @@ async def bill_of_materials(
             amount = multiplier * item.quantity
             quantities[key] += amount
             entities[key] = (item.part, item.color)
-            contributions[key].append(BomContribution(amount, current_path))
+            contributions[key].append(
+                BomContribution(quantity=amount, owner_path=current_path)
+            )
         for item in inventory.sets:
             await expand(item.set.set_num, multiplier * item.quantity, current_path)
         for item in inventory.minifigs:
@@ -202,11 +231,11 @@ async def bill_of_materials(
     await expand(owner_num, 1, ())
     rows = tuple(
         BomRow(
-            entities[key][0],
-            entities[key][1],
-            quantity,
-            tuple(contributions[key]),
+            part=entities[key][0],
+            color=entities[key][1],
+            quantity=quantity,
+            provenance=tuple(contributions[key]),
         )
         for key, quantity in sorted(quantities.items())
     )
-    return CatalogBom(rows, tuple(skipped))
+    return CatalogBom(rows=rows, skipped=tuple(skipped))

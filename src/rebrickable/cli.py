@@ -117,7 +117,8 @@ def _flush_stream(stream: IO[str] | None) -> None:
 
 
 class _MessageWriter(Protocol):
-    def write(self, value: str, /) -> object: ...
+    def write(self, value: str, /) -> object:
+        """Write an argparse message to its selected output stream."""
 
 
 class _ArgumentParser(argparse.ArgumentParser):

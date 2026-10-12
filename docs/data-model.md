@@ -1,7 +1,9 @@
 # Offline catalog and domain model
 
-Every domain result is an immutable, slotted dataclass. Identifiers with possible
-leading zeroes remain strings. Repository facades expose stable `get`, `require`,
+Every domain result is an immutable, slotted dataclass. Public records support
+existing positional constructors and named arguments, for example
+`PartRef("ldraw", "99780")` and `PartRef(system="ldraw", value="99780")`.
+Identifiers with possible leading zeroes remain strings. Repository facades expose stable `get`, `require`,
 `count`, bounded `list`, and paged asynchronous `iter` methods for parts, sets,
 minifigures, colors, themes, categories, and elements. Required lookups raise
 `EntityNotFoundError`.
@@ -27,8 +29,8 @@ Use namespace-bearing references when identifiers cross systems:
 ```python
 from rebrickable import ColorRef, PartRef
 
-part = PartRef("ldraw", "99780")
-color = ColorRef("ldraw", 4)
+part = PartRef(system="ldraw", value="99780")
+color = ColorRef(system="ldraw", value=4)
 availability = await session.check_part_color(part, color)
 ```
 
