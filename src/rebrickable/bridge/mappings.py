@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from rebrickable.bridge._session import BridgeSession
 from rebrickable.bridge.models import (
     ColorMatch,
     LDrawColorInfo,
@@ -11,11 +10,6 @@ from rebrickable.bridge.models import (
     PartMatch,
 )
 from rebrickable.types import MappingSource, MappingStatus, normalize_ldraw_code
-
-if TYPE_CHECKING:
-    # Type-only reference; the composition root does not import at runtime here.
-    # codeql[py/cyclic-import]
-    from rebrickable.session import RebrickableSession
 
 __all__ = [
     "normalize_ldraw_code",
@@ -26,7 +20,7 @@ __all__ = [
 ]
 
 
-async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> PartMatch:
+async def resolve_ldraw_part(session: BridgeSession, ldraw_code: str) -> PartMatch:
     connection = await session._connection()
     state = session._opened_state
     snapshot = state.snapshot_id if state and state.snapshot_id else "unknown"
@@ -141,9 +135,7 @@ async def resolve_ldraw_part(session: RebrickableSession, ldraw_code: str) -> Pa
     )
 
 
-async def resolve_rebrickable_part(
-    session: RebrickableSession, part_num: str
-) -> PartMatch:
+async def resolve_rebrickable_part(session: BridgeSession, part_num: str) -> PartMatch:
     connection = await session._connection()
     state = session._opened_state
     snapshot = state.snapshot_id if state and state.snapshot_id else "unknown"
@@ -252,7 +244,7 @@ async def resolve_rebrickable_part(
 
 
 async def resolve_ldraw_color(
-    session: RebrickableSession, color: LDrawColorInfo | int
+    session: BridgeSession, color: LDrawColorInfo | int
 ) -> ColorMatch:
     connection = await session._connection()
     state = session._opened_state
@@ -382,7 +374,7 @@ async def resolve_ldraw_color(
 
 
 async def resolve_rebrickable_color(
-    session: RebrickableSession, color_id: int
+    session: BridgeSession, color_id: int
 ) -> ColorMatch:
     connection = await session._connection()
     state = session._opened_state

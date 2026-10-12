@@ -121,6 +121,10 @@ Every command prints to stdout, keeps progress and diagnostics on stderr, and
 returns a meaningful exit code (`0` ok, `2` invalid input, `3` missing data,
 `4` incomplete translation, `5` API failure).
 
+When a stdout consumer closes early, the CLI exits quietly with `0`, preserving
+any nonzero status already computed. A closed stderr drops further diagnostics
+while the command continues with stdout and its own exit status.
+
 | Command                 | Purpose                                             |
 | ----------------------- | --------------------------------------------------- |
 | `status`                | Inspect and verify local catalog state              |

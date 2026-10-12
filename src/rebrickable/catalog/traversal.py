@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Final
 
+__all__ = ["MAX_TRAVERSAL_DEPTH", "THEME_LINEAGE_CTE", "THEME_SUBTREE_CTE"]
+
 MAX_TRAVERSAL_DEPTH: Final = 100
 
-# Imported by catalog query and search modules.
-# codeql[py/unused-global-variable]
 THEME_SUBTREE_CTE: Final = (
     "theme_tree(id, depth, path) AS ("  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
     "SELECT id, 0, printf('/%d/', id) FROM themes WHERE id=? UNION ALL "
@@ -23,8 +23,6 @@ THEME_SUBTREE_CTE: Final = (
     "AND instr(tt.path, printf('/%d/', t.id)) = 0)"
 )
 
-# Imported by catalog query and search modules.
-# codeql[py/unused-global-variable]
 THEME_LINEAGE_CTE: Final = (
     "theme_lineage(id, parent_id, depth, path) AS ("  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
     "SELECT id, parent_id, 0, printf('/%d/', id) FROM themes WHERE id=? UNION ALL "

@@ -10,10 +10,11 @@ import os
 import platform
 import sqlite3
 import sys
+from contextlib import suppress
 from importlib import metadata
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, Never, Protocol, override
 
 import yaml
 
@@ -49,8 +50,101 @@ from rebrickable.types import (
 from rebrickable.urls import minifig_url, part_url, set_url
 
 
+class _StdoutPipeClosedError(Exception):
+    """Stop producing output after its consumer closes the pipe."""
+
+
+def _silence_stream(stream: IO[str]) -> None:
+    """Prevent a failed stream from flushing again during interpreter shutdown."""
+    try:
+        descriptor = stream.fileno()
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, descriptor)
+        finally:
+            if devnull != descriptor:
+                with suppress(OSError):
+                    os.close(devnull)
+    except (AttributeError, OSError, ValueError):
+        # EMFILE and replaced streams can prevent descriptor redirection.
+        # Closing the raw layer discards buffered data without another flush.
+        with suppress(AttributeError, OSError, ValueError):
+            if isinstance(stream, io.TextIOWrapper):
+                getattr(stream.buffer, "raw", stream.buffer).close()
+            else:
+                stream.close()
+
+
+def _write_stdout(value: str | bytes) -> None:
+    stream = sys.stdout
+    if stream is None or stream.closed:
+        raise _StdoutPipeClosedError
+    try:
+        if isinstance(value, bytes):
+            stream.buffer.write(value)
+        else:
+            stream.write(value)
+    except BrokenPipeError:
+        _silence_stream(stream)
+        raise _StdoutPipeClosedError from None
+
+
+def _print_stdout(value: object) -> None:
+    _write_stdout(f"{value}\n")
+
+
+def _write_stderr(message: str) -> None:
+    stream = sys.stderr
+    if stream is None or stream.closed:
+        return
+    try:
+        stream.write(message)
+    except BrokenPipeError:
+        _silence_stream(stream)
+
+
+def _print_stderr(message: str) -> None:
+    _write_stderr(f"{message}\n")
+
+
+def _flush_stream(stream: IO[str] | None) -> None:
+    if stream is None or stream.closed:
+        return
+    try:
+        stream.flush()
+    except BrokenPipeError:
+        _silence_stream(stream)
+
+
+class _MessageWriter(Protocol):
+    def write(self, value: str, /) -> object: ...
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    @override
+    def error(self, message: str) -> Never:
+        _write_stderr(self.format_usage())
+        self.exit(2, f"{self.prog}: error: {message}\n")
+
+    @override
+    def _print_message(self, message: str, file: _MessageWriter | None = None) -> None:
+        if message:
+            if file is sys.stdout:
+                _write_stdout(message)
+            elif file is None or file is sys.stderr:
+                _write_stderr(message)
+            else:
+                file.write(message)
+
+    @override
+    def exit(self, status: int = 0, message: str | None = None) -> Never:
+        if message:
+            _write_stderr(message)
+        raise SystemExit(status)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rebrickable")
+    parser = _ArgumentParser(prog="rebrickable")
     parser.add_argument(
         "--version",
         action="version",
@@ -225,14 +319,14 @@ def _print_entity(
     value: Any, *, json_output: bool = False, output_format: str = "table"
 ) -> None:
     if json_output or output_format == "json":
-        sys.stdout.write(to_json(value, schema="rebrickable.entity"))
+        _write_stdout(to_json(value, schema="rebrickable.entity"))
     elif output_format == "yaml":
         data = json.loads(to_json(value, schema="rebrickable.entity"))["data"]
-        sys.stdout.write(yaml.safe_dump(data, sort_keys=True))
+        _write_stdout(yaml.safe_dump(data, sort_keys=True))
     elif output_format == "csv":
-        sys.stdout.write(to_csv(value))
+        _write_stdout(to_csv(value))
     else:
-        print(value)
+        _print_stdout(value)
 
 
 def _read_bom(path: Path, args: argparse.Namespace) -> Bom:
@@ -285,9 +379,8 @@ async def _api_command(config: Config, args: argparse.Namespace) -> int:
 def _progress(event: ProgressEvent) -> None:
     detail = f" {event.dataset}" if event.dataset else ""
     count = f" {event.current}" if event.current is not None else ""
-    print(
+    _print_stderr(
         f"[{event.stage.value}]{detail}{count} {event.message}".rstrip(),
-        file=sys.stderr,
     )
 
 
@@ -306,12 +399,12 @@ async def _entity_command(session: RebrickableSession, args: argparse.Namespace)
             identifier, include_spares=args.include_spares
         )
         if args.csv or args.output_format == "csv":
-            sys.stdout.write(catalog_bom_to_csv(bom.rows))
+            _write_stdout(catalog_bom_to_csv(bom.rows))
         else:
             _print_entity(bom, json_output=args.json, output_format=args.output_format)
         if bom.skipped and not args.json:
             for item in bom.skipped:
-                print(f"skipped {item.owner_num}: {item.reason}", file=sys.stderr)
+                _print_stderr(f"skipped {item.owner_num}: {item.reason}")
     else:
         entity = await repository.require(identifier)
         _print_entity(entity, json_output=args.json, output_format=args.output_format)
@@ -321,7 +414,7 @@ async def _entity_command(session: RebrickableSession, args: argparse.Namespace)
 async def _run(args: argparse.Namespace) -> int:
     if args.command == "url":
         builders = {"part": part_url, "set": set_url, "minifig": minifig_url}
-        print(builders[args.kind](args.identifier))
+        _print_stdout(builders[args.kind](args.identifier))
         return ExitCode.OK
     if args.command == "api-spec":
         resource = files("rebrickable.data").joinpath(OPENAPI_RESOURCE)
@@ -329,8 +422,7 @@ async def _run(args: argparse.Namespace) -> int:
         if args.output:
             args.output.write_bytes(raw)
         else:
-            sys.stdout.buffer.write(raw)
-            sys.stdout.flush()
+            _write_stdout(raw)
         return ExitCode.OK
 
     config = Config.load()
@@ -376,14 +468,16 @@ async def _run(args: argparse.Namespace) -> int:
                 offset=args.offset,
             )
             if args.json or args.output_format == "json":
-                sys.stdout.write(to_json(result, schema="rebrickable.search"))
+                _write_stdout(to_json(result, schema="rebrickable.search"))
             elif args.output_format == "yaml":
                 _print_entity(result, output_format="yaml")
             elif args.output_format == "csv":
                 _print_entity(result.hits, output_format="csv")
             else:
                 for hit in result.hits:
-                    print(f"{hit.kind.value:<14} {hit.canonical_id:<20} {hit.title}")
+                    _print_stdout(
+                        f"{hit.kind.value:<14} {hit.canonical_id:<20} {hit.title}"
+                    )
             return ExitCode.OK
         if args.command == "part":
             _check_part_flags(args)
@@ -427,7 +521,7 @@ async def _run(args: argparse.Namespace) -> int:
                 return ExitCode.INVALID_INPUT if conflict else ExitCode.OK
             if args.catalog_command == "path":
                 state = await session.state()
-                print(state.database_path)
+                _print_stdout(state.database_path)
                 return (
                     ExitCode.OK
                     if state.status is CatalogStatus.READY
@@ -463,19 +557,19 @@ async def _run(args: argparse.Namespace) -> int:
                 args.model, library_path=args.ldraw_library
             )
             if args.csv or args.output_format == "csv":
-                sys.stdout.write(
+                _write_stdout(
                     translation_to_csv(report, unresolved_only=args.unresolved_only)
                 )
             elif args.json:
                 value = report.incomplete_rows if args.unresolved_only else report
-                sys.stdout.write(to_json(value, schema="rebrickable.ldraw-translation"))
+                _write_stdout(to_json(value, schema="rebrickable.ldraw-translation"))
             else:
-                sys.stdout.write(
+                _write_stdout(
                     translation_table(report, unresolved_only=args.unresolved_only)
                 )
             if not args.json:
                 for note in report.diagnostics:
-                    print(f"[ldraw] {note}", file=sys.stderr)
+                    _print_stderr(f"[ldraw] {note}")
             return (
                 ExitCode.OK
                 if all(row.status is MappingStatus.RESOLVED for row in report.rows)
@@ -485,38 +579,31 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _parser()
     try:
+        parser = _parser()
         # Normalize IntEnum exit codes to the public plain-int return contract.
         return int(asyncio.run(_run(parser.parse_args(argv))))  # pyrefly: ignore[unnecessary-type-conversion]
-    except BrokenPipeError:
-        try:
-            stdout_descriptor = sys.stdout.fileno()
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            try:
-                os.dup2(devnull, stdout_descriptor)
-            finally:
-                if devnull != stdout_descriptor:
-                    os.close(devnull)
-        except (OSError, ValueError, io.UnsupportedOperation):
-            # Cleanup is best effort for closed or replaced stdout; exit quietly.
-            pass
+    except _StdoutPipeClosedError:
         return int(ExitCode.OK)
     except (ValueError, argparse.ArgumentError, OptionalDependencyError) as exc:
-        print(str(exc), file=sys.stderr)
+        _print_stderr(str(exc))
         return int(ExitCode.INVALID_INPUT)
     except (CatalogUnavailableError, EntityNotFoundError) as exc:
-        print(str(exc), file=sys.stderr)
+        _print_stderr(str(exc))
         return int(ExitCode.MISSING_DATA)
     except ApiError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_stderr(str(exc))
         return int(ExitCode.API_FAILURE)
     except RebrickableError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_stderr(str(exc))
         return int(ExitCode.UNEXPECTED)
     except Exception as exc:  # noqa: BLE001 - final CLI diagnostic boundary
-        print(f"unexpected failure: {exc}", file=sys.stderr)
+        _print_stderr(f"unexpected failure: {exc}")
         return int(ExitCode.UNEXPECTED)
+
+    finally:
+        _flush_stream(sys.stdout)
+        _flush_stream(sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover

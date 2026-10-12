@@ -3,8 +3,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TextIO
 from unittest.mock import Mock
 
 import pytest
@@ -134,19 +136,24 @@ def test_api_spec_bytes_identical_between_stdout_and_output(
 
 
 @pytest.fixture
-def broken_pipe_io(monkeypatch) -> tuple[Mock, Mock, Mock, Mock]:
-    async def burst(_args: object) -> int:
-        raise BrokenPipeError
+def broken_pipe_io(monkeypatch, capsys) -> tuple[Mock, Mock, Mock, Mock]:
+    capsys.readouterr()
 
-    stdout = Mock()
+    async def burst(_args: object) -> int:
+        cli._write_stdout("output")
+        return 0
+
+    stdout = Mock(spec=io.TextIOWrapper)
+    stdout.buffer = Mock(spec=io.BufferedWriter)
+    stdout.buffer.raw = Mock(spec=io.FileIO)
+    stdout.closed = False
+    stdout.write.side_effect = BrokenPipeError
     stdout.fileno.return_value = 1
     open_descriptor = Mock(return_value=9)
     duplicate = Mock()
     close_descriptor = Mock()
     monkeypatch.setattr(cli, "_run", burst)
-    monkeypatch.setattr(
-        cli, "sys", SimpleNamespace(stdout=stdout, stderr=cli.sys.stderr)
-    )
+    monkeypatch.setattr(cli, "sys", _CliStreams(stdout=stdout))
     monkeypatch.setattr(
         cli,
         "os",
@@ -194,11 +201,12 @@ def test_broken_pipe_exits_quietly(
     assert main(["url", "part", "3001"]) == 0
     assert capsys.readouterr() == ("", "")
     stdout.fileno.assert_called_once_with()
-    stdout.write.assert_not_called()
+    stdout.write.assert_called_once_with("output")
     if failure is not None and failure.startswith("stdout_"):
         open_descriptor.assert_not_called()
         duplicate.assert_not_called()
         close_descriptor.assert_not_called()
+        stdout.buffer.raw.close.assert_called_once_with()
     else:
         open_descriptor.assert_called_once_with(os.devnull, os.O_WRONLY)
         if failure == "open":
@@ -212,27 +220,44 @@ def test_broken_pipe_exits_quietly(
                 close_descriptor.assert_called_once_with(devnull)
 
 
-def test_repeated_broken_pipes_release_temporary_descriptors(
-    broken_pipe_io: tuple[Mock, Mock, Mock, Mock], capsys
-) -> None:
-    _, open_descriptor, duplicate, close_descriptor = broken_pipe_io
-    descriptors = iter(range(10, 20))
-    outstanding: set[int] = set()
+@pytest.mark.usefixtures("broken_pipe_io")
+def test_broken_pipe_fixture_captures_diagnostics(capsys) -> None:
+    cli._print_stderr("injected diagnostic")
+    assert capsys.readouterr() == ("", "injected diagnostic\n")
 
-    def allocate(_path: str, _flags: int) -> int:
-        descriptor = next(descriptors)
-        outstanding.add(descriptor)
+
+class _CliStreams(SimpleNamespace):
+    @property
+    def stderr(self) -> TextIO | None:
+        return sys.stderr
+
+
+def test_repeated_broken_pipes_release_temporary_descriptors(monkeypatch) -> None:
+    opened: list[int] = []
+
+    def allocate(path: str, flags: int) -> int:
+        descriptor = os.open(path, flags)
+        opened.append(descriptor)
         return descriptor
 
-    def release(descriptor: int) -> None:
-        outstanding.remove(descriptor)
-
-    open_descriptor.side_effect = allocate
-    close_descriptor.side_effect = release
-    for _ in range(10):
-        assert main(["url", "part", "3001"]) == 0
-        assert not outstanding
-    assert open_descriptor.call_count == 10
-    assert duplicate.call_count == 10
-    assert close_descriptor.call_count == 10
-    assert capsys.readouterr() == ("", "")
+    monkeypatch.setattr(
+        cli,
+        "os",
+        SimpleNamespace(
+            devnull=os.devnull,
+            O_WRONLY=os.O_WRONLY,
+            open=allocate,
+            dup2=os.dup2,
+            close=os.close,
+        ),
+    )
+    reader, writer = os.pipe()
+    os.close(reader)
+    with os.fdopen(writer, "w") as stream:
+        for _ in range(10):
+            cli._silence_stream(stream)
+            stream.write("discarded output")
+            stream.flush()
+            with pytest.raises(OSError):
+                os.fstat(opened[-1])
+    assert len(opened) == 10

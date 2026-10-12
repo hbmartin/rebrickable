@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from filelock import FileLock
 
-# Mappings reference the composition root only under TYPE_CHECKING.
-# codeql[py/cyclic-import]
+from rebrickable.bridge._session import BridgeSession
 from rebrickable.bridge.mappings import (
     normalize_ldraw_code,
     resolve_ldraw_color,
@@ -42,10 +41,6 @@ if TYPE_CHECKING:
     from rebrickable.api.client import RebrickableClient
     from rebrickable.config import Config
 
-    # Type-only reference; the composition root does not import at runtime here.
-    # codeql[py/cyclic-import]
-    from rebrickable.session import RebrickableSession
-
 _STATUS_SEVERITY = {
     MappingStatus.RESOLVED: 0,
     MappingStatus.AMBIGUOUS: 1,
@@ -54,7 +49,7 @@ _STATUS_SEVERITY = {
 
 
 class LDrawBridge:
-    def __init__(self, session: RebrickableSession) -> None:
+    def __init__(self, session: BridgeSession) -> None:
         self._session = session
 
     async def resolve_ldraw_part(self, ldraw_code: str) -> PartMatch:

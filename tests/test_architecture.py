@@ -58,8 +58,9 @@ def runtime_session_imports(source: str) -> list[int]:
     return violations
 
 
-def test_catalog_has_no_reverse_runtime_imports() -> None:
-    for path in (ROOT / "src/rebrickable/catalog").rglob("*.py"):
+@pytest.mark.parametrize("directory", ["catalog", "bridge"])
+def test_leaf_modules_have_no_reverse_runtime_imports(directory: str) -> None:
+    for path in (ROOT / "src/rebrickable" / directory).rglob("*.py"):
         assert not runtime_session_imports(path.read_text()), path.name
 
 
