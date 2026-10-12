@@ -208,18 +208,54 @@ The full list is in the [limitations reference](https://hbmartin.github.io/rebri
 ## Development
 
 ```console
-uv sync --all-extras --all-groups
-uv run ruff check src scripts tests
-uv run ty check src/rebrickable
-uv run --locked pyroma --min 10 .
-uv run pytest
+uv sync --all-extras --all-groups --locked
+uv run python scripts/validate.py static
+uv run python scripts/validate.py types
+uv run python scripts/validate.py tests
+uv run python scripts/validate.py generated
+uv run python scripts/validate.py performance
 ```
 
 Tests run with sockets disabled by default. Network-dependent suites are opt-in
 through markers: `-m integration` uses current Rebrickable downloads or the
 API, and `-m mutation` performs guarded user-account mutations. CI enforces
-Ruff with `select = ["ALL"]`, two type checkers, and 97% branch coverage across
-Python 3.12, 3.13, and 3.14.
+Ruff with `select = ["ALL"]`, strict Pyrefly plus `ty` on source and consumer
+examples, and independent coverage gates across Python 3.12, 3.13, and 3.14:
+**97% combined statement/branch coverage** and **95% of branches**. The branch
+checker compares raw counts without rounding and rejects incomplete reports.
+Source tests use asyncio debugging, strict markers/configuration, strict expected
+failures, warnings as errors, and explicitly exclude integration and mutations.
+
+Hypothesis uses 100 reproducible examples by default; manual validation can use
+1,000 with `uv run python scripts/validate.py tests --profile extended`. Synthetic
+imports exercise 10,000 parts and 10,000/100,000 inventory rows, with a 32 MiB
+Python allocation peak, 8 MiB growth limit, and 512 MiB process RSS ceiling on
+Linux. Evidence-query tests span the 300-row batching boundary.
+
+Workflow linting requires actionlint **1.7.12**, ShellCheck **0.11.0**, and zizmor
+**1.30.1**: run `uv run python scripts/validate.py workflows`. Linux CI installs
+these binaries with `scripts/install_workflow_tools.py`, checking pinned SHA-256
+digests before extracting executables. On other platforms, install those same
+versions locally. The one narrow zizmor exception retains GitHub's supported
+relative syntax for same-commit reusable release validation.
+
+CI tests installed wheels outside the checkout on Linux, macOS, and Windows,
+with and without LDraw, and resolves Python 3.12 runtime lower bounds separately
+from locked tooling. `uv build --clear` followed by
+`uv run python scripts/check_distributions.py --mode rebuild` verifies metadata,
+license, type marker, resources, dependency consistency, and an sdist-built wheel.
+Use `--mode core`, `--mode ldraw`, or `--mode minimum` for isolated install checks.
+Publication waits for validation of the exact artifacts it uploads.
+
+Security, upstream drift, integration, and real-catalog benchmarks have no cron
+triggers. Dependency auditing, Semgrep, and both CodeQL suites run independently
+and retain diagnostics. Validation and security accept an optional full expected
+commit SHA on manual dispatch; drift automation explicitly dispatches both after
+pushing and fails visibly on command errors. Manual integration retains its
+credential and disposable-account guards, with account mutations off by default.
+The manual real-catalog benchmark records five warmed samples, timing medians,
+snapshot fingerprints, and refresh/query RSS, enforcing a default 512 MiB ceiling.
+Documentation deployment continues on pushes to `main`.
 
 Package metadata must score 10/10 with
 [pyroma621](https://pypi.org/project/pyroma621/), both from the checkout and the

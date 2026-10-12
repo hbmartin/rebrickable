@@ -132,7 +132,8 @@ class ColorRef:
                 raise ValueError(
                     f"color identifier must be an integer: {value!r}"
                 ) from exc
-        object.__setattr__(self, "value", int(value))
+        # Keep normalization of bool/int subclasses to a concrete integer.
+        object.__setattr__(self, "value", int(value))  # pyrefly: ignore[unnecessary-type-conversion]
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +246,6 @@ def freeze_json(value: Any) -> Any:
     """Recursively freeze JSON-compatible data for immutable DTO extras."""
     if isinstance(value, dict):
         return MappingProxyType({str(k): freeze_json(v) for k, v in value.items()})
-    if isinstance(value, list | tuple):
+    if isinstance(value, (list, tuple)):
         return tuple(freeze_json(item) for item in value)
     return value

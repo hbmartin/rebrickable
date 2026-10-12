@@ -85,11 +85,11 @@ class Config:
         payload: dict[str, Any] = {}
         if target.exists():
             try:
-                raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+                raw: Any = yaml.safe_load(target.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, yaml.YAMLError) as exc:
                 raise ConfigLoadError(f"unable to load {target}: {exc}") from exc
             if raw is None:
-                raw = {}
+                raw = payload
             if not isinstance(raw, dict):
                 raise ConfigLoadError(f"configuration must be a mapping: {target}")
             payload = dict(raw)

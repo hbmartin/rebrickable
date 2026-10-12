@@ -42,7 +42,7 @@ async def search(
     if kinds:
         placeholders = ",".join("?" for _ in kinds)
         conditions.append(f"kind IN ({placeholders})")
-        values.extend(item.value for item in sorted(kinds, key=lambda item: item.value))
+        values.extend(item.value for item in sorted(kinds))
     filter_map = {
         "year >= ?": active_filters.year_from,
         "year <= ?": active_filters.year_to,
@@ -129,7 +129,7 @@ async def search(
                 WHERE {where}
                 ORDER BY rank, kind, canonical_id
                 LIMIT ? OFFSET ?
-                """,
+                """,  # noqa: S608 - closed SQL clauses; all values bound separately
                 [*cte_values, *rank_values, *values, limit, offset],
             )
         ).fetchall()
@@ -139,7 +139,7 @@ async def search(
     elif offset:
         count_row = await (
             await connection.execute(
-                f"{cte_sql} SELECT COUNT(*) FROM search_documents WHERE {where}",
+                f"{cte_sql} SELECT COUNT(*) FROM search_documents WHERE {where}",  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                 [*cte_values, *values],
             )
         ).fetchone()

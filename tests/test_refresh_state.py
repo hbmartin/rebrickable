@@ -52,7 +52,7 @@ def downloader(sources: dict[str, Path], *, unchanged: bool = False):
             "url": url,
             "etag": '"fixture"',
             "last_modified": "Sat, 01 Aug 2026 00:00:00 GMT",
-            "byte_length": destination.stat().st_size,
+            "byte_length": destination.stat().st_size,  # noqa: ASYNC240 - small local fixture; no production I/O
             "sha256": "a" * 64,
         }
 
@@ -302,6 +302,8 @@ async def test_refresh_cancellation_preserves_active_snapshot(
 
     async def wait_forever(*args, **kwargs):
         started.set()
+        # A suspended await deliberately simulates an interrupted download.
+        # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
         await asyncio.Future()
 
     monkeypatch.setattr("rebrickable.refresh._download_one", wait_forever)

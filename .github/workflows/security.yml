@@ -3,9 +3,66 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "13 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact commit SHA to scan (optional)
+        type: string
+        default: ""
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify requested revision
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python scripts/check_revision.py
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --all-extras --all-groups --locked
+      - run: mkdir -p reports
+      - name: Audit locked dependencies
+        run: uv run --locked pip-audit --format json --output reports/dependencies.json 2>&1 | tee reports/dependency-audit.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: dependency-audit
+          path: reports/
+          retention-days: 14
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify requested revision
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python scripts/check_revision.py
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: mkdir -p reports
+      - name: Repository guardrails
+        # semgrep 1.136.0 crashes on Python 3.14 (custom tp_new metaclasses).
+        run: uvx --python 3.12 --from semgrep==1.136.0 --with 'setuptools<81' semgrep --config .semgrep.yml --error --json --output reports/semgrep.json 2>&1 | tee reports/semgrep.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: semgrep
+          path: reports/
+          retention-days: 14
   codeql:
     runs-on: ubuntu-latest
     permissions:
@@ -16,32 +73,28 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          languages: python
-          queries: security-extended,security-and-quality
-          config: |
-            query-filters:
-              # Protocol/overload ellipses and cancellation awaits are intentional.
-              - exclude:
-                  id: py/ineffectual-statement
-              # Reverse session imports are guarded by TYPE_CHECKING.
-              - exclude:
-                  id: py/cyclic-import
-              # Shared SQL constants are consumed by queries and search.
-              - exclude:
-                  id: py/unused-global-variable
-              # Quoted typing.cast targets use the imported Any type.
-              - exclude:
-                  id: py/unused-import
+      - name: Verify requested revision
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python scripts/check_revision.py
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          db-location: ${{ runner.temp }}/codeql-databases
+          languages: python
+          queries: security-extended,security-and-quality
       - run: uv sync --all-extras --all-groups --locked
-      - name: Audit locked Python dependencies
-        run: uv run pip-audit
-      - name: Run repository guardrails
-        # semgrep 1.136.0 crashes on Python 3.14 (custom tp_new metaclasses).
-        run: uvx --python 3.12 --from semgrep==1.136.0 --with 'setuptools<81' semgrep --config .semgrep.yml --error
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          output: reports/codeql
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: codeql
+          path: |
+            reports/codeql/
+            ${{ runner.temp }}/codeql-databases/python/log/
+          retention-days: 14

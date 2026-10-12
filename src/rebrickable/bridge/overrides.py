@@ -89,6 +89,10 @@ def materialize_overrides(path: Path | None, database: Path) -> None:
         connection.close()
 
 
+def _override_key(item: dict[str, str]) -> tuple[str, str, str]:
+    return item["source_system"], item["source_id"], item["target_system"]
+
+
 def write_overrides(path: Path, records: tuple[dict[str, str], ...]) -> None:
     payload: dict[str, Any] = {"version": 1, "parts": [], "colors": []}
     for record in records:
@@ -96,13 +100,7 @@ def write_overrides(path: Path, records: tuple[dict[str, str], ...]) -> None:
             {key: value for key, value in record.items() if key != "entity_kind"},
         )
     for key in ("parts", "colors"):
-        payload[key].sort(
-            key=lambda item: (
-                item["source_system"],
-                item["source_id"],
-                item["target_system"],
-            )
-        )
+        payload[key].sort(key=_override_key)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}."

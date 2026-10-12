@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
+from dataclasses import asdict
+from statistics import median
 from time import perf_counter
 
 from rebrickable import Bom, BomItem, ColorRef, PartRef, RebrickableSession, SearchKind
 
 
-async def benchmark(args: argparse.Namespace) -> dict[str, float | int | str]:
+async def sample(args: argparse.Namespace) -> dict[str, float | int | str]:
     started = perf_counter()
     async with await RebrickableSession.connect() as session:
         connect_seconds = perf_counter() - started
@@ -58,6 +61,37 @@ async def benchmark(args: argparse.Namespace) -> dict[str, float | int | str]:
         "validation_seconds": validation_seconds,
         "validation_seconds_per_row": validation_per_row,
     }
+    return results
+
+
+async def benchmark(args: argparse.Namespace) -> dict[str, object]:
+    await sample(args)  # Warm filesystem and SQLite caches before the five samples.
+    samples = [await sample(args) for _ in range(5)]
+    medians = {
+        name: median(float(item[name]) for item in samples)
+        for name in (
+            "connect_seconds",
+            "warm_part_seconds",
+            "warm_search_seconds",
+            "validation_seconds",
+            "validation_seconds_per_row",
+        )
+    }
+    async with await RebrickableSession.connect() as session:
+        state = await session.opened_catalog_state()
+    results: dict[str, object] = {
+        "samples": samples,
+        "medians": medians,
+        "snapshot": {
+            "snapshot_id": state.snapshot_id,
+            "schema_version": state.schema_version,
+            "retrieved_at": state.retrieved_at.isoformat()
+            if state.retrieved_at
+            else None,
+            "files": [asdict(item) for item in state.files],
+        },
+        "peak_rss_mib": peak_rss_mib(),
+    }
     ceilings = {
         "connect_seconds": args.max_connect_seconds,
         "warm_part_seconds": args.max_part_seconds,
@@ -65,18 +99,30 @@ async def benchmark(args: argparse.Namespace) -> dict[str, float | int | str]:
         "validation_seconds_per_row": args.max_validation_seconds_per_row,
     }
     failures = [
-        f"{name}={results[name]:.6f} exceeds {ceiling:.6f}"
+        f"{name}={medians[name]:.6f} exceeds {ceiling:.6f}"
         for name, ceiling in ceilings.items()
-        if float(results[name]) > ceiling
+        if medians[name] > ceiling
     ]
+    if (rss := results["peak_rss_mib"]) is not None and float(rss) > args.max_rss_mib:
+        failures.append(f"RSS {rss} MiB exceeds {args.max_rss_mib} MiB")
     print(json.dumps(results, sort_keys=True))
     if failures:
         raise RuntimeError("; ".join(failures))
     return results
 
 
+def peak_rss_mib() -> float | None:
+    if sys.platform == "win32":
+        return None
+    import resource  # noqa: PLC0415 - resource is unavailable on Windows
+
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss / (1024 * 1024 if sys.platform == "darwin" else 1024)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--max-rss-mib", type=float, default=512)
     parser.add_argument("--validation-rows", type=int, default=300)
     parser.add_argument("--max-connect-seconds", type=float, default=5.0)
     parser.add_argument("--max-part-seconds", type=float, default=0.05)

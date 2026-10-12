@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
 
 class RebrickableError(Exception):
@@ -73,6 +73,7 @@ class ApiError(RebrickableError):
             self.retry_after,
         )
 
+    @override
     def __str__(self) -> str:
         status = "transport" if self.status is None else str(self.status)
         return f"{self.operation_id} failed ({status}): {self.detail}"

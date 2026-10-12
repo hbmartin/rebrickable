@@ -147,7 +147,7 @@ async def test_error_redaction_and_form_encoding() -> None:
     token = await api.create_user_token(
         CreateUserTokenRequest(username="u", password="p")
     )
-    assert token.user_token == "created-token"
+    assert token.user_token == "created-token"  # noqa: S105 - public fake token in a transport fixture
     assert transport.requests[-1][2]["data"] == {"username": "u", "password": "p"}
 
 

@@ -55,7 +55,7 @@ def _json_value(value: Any) -> Any:
             for key, item in value.items()
             if str(key).casefold() not in _SECRET_FIELDS
         }
-    if isinstance(value, tuple | list):
+    if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
     return value
 
@@ -81,7 +81,7 @@ def to_json(value: Any, *, schema: str = "rebrickable") -> str:
 
 
 def _csv_cell(value: Any) -> str:
-    if isinstance(value, Mapping | list):
+    if isinstance(value, (Mapping, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return "" if value is None else str(value)
 

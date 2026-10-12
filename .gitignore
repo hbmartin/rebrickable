@@ -13,3 +13,7 @@ site/
 *.egg-info/
 *.py[cod]
 triage_decisions.db
+.tools/
+coverage.json
+coverage.xml
+reports/

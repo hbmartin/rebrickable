@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +12,7 @@ from urllib.parse import quote
 import aiosqlite
 from filelock import FileLock, Timeout
 
+from rebrickable._workers import acquire_lock, settle
 from rebrickable.catalog.schema import SCHEMA_VERSION
 from rebrickable.config import Config
 from rebrickable.errors import (
@@ -193,7 +193,7 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
             thread_local=False,
         )
         try:
-            await asyncio.to_thread(lock.acquire)
+            await acquire_lock(lock)
         except Timeout as exc:
             raise CatalogUnavailableError("catalog is busy; retry opening it") from exc
     try:
@@ -206,15 +206,13 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
             raise CatalogUnavailableError(
                 "catalog is not ready; run `rebrickable refresh`",
             )
-        connection = await aiosqlite.connect(
-            _read_only_uri(state.database_path),
-            uri=True,
-        )
+        connection = aiosqlite.connect(_read_only_uri(state.database_path), uri=True)
         try:
+            connection = await settle(connection)
             connection.row_factory = aiosqlite.Row
             await connection.execute("PRAGMA query_only = ON")
         except BaseException:
-            await connection.close()
+            await settle(connection.close())
             raise
         return connection, state
     finally:

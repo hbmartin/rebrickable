@@ -9,6 +9,7 @@ from typing import Self
 
 import aiosqlite
 
+from rebrickable._workers import settle
 from rebrickable.bom import Bom, BomValidationReport, BomValidationRow
 from rebrickable.bridge.models import (
     ColorMatch,
@@ -70,6 +71,8 @@ class RebrickableSession:
         self.categories = CategoriesRepository(self)
         self.elements = ElementsRepository(self)
         self.inventories = InventoriesRepository(self)
+        # The bridge references this root only under TYPE_CHECKING.
+        # codeql[py/cyclic-import]
         from rebrickable.bridge.ldraw import LDrawBridge
 
         self.ldraw = LDrawBridge(self)
@@ -112,9 +115,11 @@ class RebrickableSession:
 
     async def close(self) -> None:
         if self._db is not None:
-            await self._db.close()
-            self._db = None
-            self._opened_state = None
+            try:
+                await settle(self._db.close())
+            finally:
+                self._db = None
+                self._opened_state = None
 
     async def state(self, *, verify: bool = False) -> CatalogState:
         """Return the currently active catalog state, which may differ when pinned."""
@@ -229,7 +234,7 @@ class RebrickableSession:
             )
             element_rows = await (
                 await connection.execute(
-                    requested + " SELECT r.idx, e.element_id FROM requested r "
+                    requested + " SELECT r.idx, e.element_id FROM requested r "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                     "JOIN elements e ON e.part_num=r.part_num AND e.color_id=r.color_id "
                     "ORDER BY r.idx, e.element_id",
                     parameters,
@@ -241,7 +246,7 @@ class RebrickableSession:
                 )
             evidence_rows = await (
                 await connection.execute(
-                    requested
+                    requested  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                     + """
                     SELECT r.idx, COUNT(DISTINCT s.set_num) AS set_count,
                            COUNT(DISTINCT li.id) AS inventory_count,
@@ -274,7 +279,7 @@ class RebrickableSession:
                 ]
                 relationship_rows = await (
                     await connection.execute(
-                        "WITH requested(idx, part_num, color_id) AS (VALUES "
+                        "WITH requested(idx, part_num, color_id) AS (VALUES "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                         + unavailable_placeholders
                         + ") "
                         + """
@@ -555,7 +560,7 @@ class RebrickableSession:
                 values.append(current)
             rows = await (
                 await connection.execute(
-                    "SELECT rel_type, child_part_num, parent_part_num "
+                    "SELECT rel_type, child_part_num, parent_part_num "  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
                     f"FROM part_relationships WHERE {' OR '.join(clauses)} "
                     "ORDER BY rel_type, child_part_num, parent_part_num",
                     values,

@@ -12,8 +12,10 @@ from typing import Final
 
 MAX_TRAVERSAL_DEPTH: Final = 100
 
+# Imported by catalog query and search modules.
+# codeql[py/unused-global-variable]
 THEME_SUBTREE_CTE: Final = (
-    "theme_tree(id, depth, path) AS ("
+    "theme_tree(id, depth, path) AS ("  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
     "SELECT id, 0, printf('/%d/', id) FROM themes WHERE id=? UNION ALL "
     "SELECT t.id, tt.depth + 1, tt.path || t.id || '/' "
     "FROM themes t JOIN theme_tree tt ON t.parent_id=tt.id "
@@ -21,8 +23,10 @@ THEME_SUBTREE_CTE: Final = (
     "AND instr(tt.path, printf('/%d/', t.id)) = 0)"
 )
 
+# Imported by catalog query and search modules.
+# codeql[py/unused-global-variable]
 THEME_LINEAGE_CTE: Final = (
-    "theme_lineage(id, parent_id, depth, path) AS ("
+    "theme_lineage(id, parent_id, depth, path) AS ("  # noqa: S608 - internal SQL clauses/identifiers; values are bound separately
     "SELECT id, parent_id, 0, printf('/%d/', id) FROM themes WHERE id=? UNION ALL "
     "SELECT t.id, t.parent_id, tl.depth + 1, tl.path || t.id || '/' "
     "FROM themes t JOIN theme_lineage tl ON t.id=tl.parent_id "

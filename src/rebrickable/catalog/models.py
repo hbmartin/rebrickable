@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, overload, override
 
 from rebrickable.types import RelationshipType
 from rebrickable.urls import minifig_url, part_url, set_url, theme_url
@@ -185,18 +185,25 @@ class InventoryDiff(Sequence[InventoryDiffRow]):
     after_version: int
     rows: tuple[InventoryDiffRow, ...]
 
+    @override
     def __iter__(self) -> Iterator[InventoryDiffRow]:
         return iter(self.rows)
 
+    @override
     def __len__(self) -> int:
         return len(self.rows)
 
     @overload
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> InventoryDiffRow: ...
 
     @overload
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[InventoryDiffRow, ...]: ...
 
+    @override
     def __getitem__(
         self, index: int | slice
     ) -> InventoryDiffRow | tuple[InventoryDiffRow, ...]:
@@ -233,17 +240,24 @@ class CatalogBom(Sequence[BomRow]):
     rows: tuple[BomRow, ...]
     skipped: tuple[SkippedInventory, ...] = ()
 
+    @override
     def __iter__(self) -> Iterator[BomRow]:
         return iter(self.rows)
 
+    @override
     def __len__(self) -> int:
         return len(self.rows)
 
     @overload
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: int) -> BomRow: ...
 
     @overload
+    # Protocol/overload declarations intentionally have no implementation.
+    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
     def __getitem__(self, index: slice) -> tuple[BomRow, ...]: ...
 
+    @override
     def __getitem__(self, index: int | slice) -> BomRow | tuple[BomRow, ...]:
         return self.rows[index]
