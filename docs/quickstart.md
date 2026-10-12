@@ -49,3 +49,12 @@ async with RebrickableClient(api_key=api_key) as client:
 `Config.write()` calls omit the key. Persisting it requires
 `include_secrets=True`, atomically rewrites the complete file, and applies mode
 `0600` where supported. User tokens and passwords are never persisted.
+
+## Snapshot retention
+
+`snapshot_retention` counts confirmed activations in activation order. The
+active pointer records private history without changing version-1 snapshots.
+Legacy directories with unknown activation history and ambiguous candidates
+are preserved outside that count, so disk use can exceed the configured limit
+until those directories are reviewed and cleaned up manually. New managed
+orphans are removed once the pointer confirms they are inactive.

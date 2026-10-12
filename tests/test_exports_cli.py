@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,7 +201,7 @@ def broken_pipe_io(monkeypatch, capsys) -> tuple[Mock, Mock, Mock, Mock]:
     duplicate = Mock()
     close_descriptor = Mock()
     monkeypatch.setattr(cli, "_run", burst)
-    monkeypatch.setattr(cli, "sys", _CliStreams(stdout=stdout))
+    monkeypatch.setattr(cli, "sys", _CliStreams(stdout=stdout, __stdout__=stdout))
     monkeypatch.setattr(
         cli,
         "os",
@@ -279,32 +280,41 @@ class _CliStreams(SimpleNamespace):
         return sys.stderr
 
 
-def test_repeated_broken_pipes_release_temporary_descriptors(monkeypatch) -> None:
-    opened: list[int] = []
-
-    def allocate(path: str, flags: int) -> int:
-        descriptor = os.open(path, flags)
-        opened.append(descriptor)
-        return descriptor
-
-    monkeypatch.setattr(
-        cli,
-        "os",
-        SimpleNamespace(
-            devnull=os.devnull,
-            O_WRONLY=os.O_WRONLY,
-            open=allocate,
-            dup2=os.dup2,
-            close=os.close,
-        ),
+def test_repeated_broken_pipes_release_temporary_descriptors() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """\
+import os
+import sys
+from types import SimpleNamespace
+from rebrickable import cli
+opened = []
+def allocate(path, flags):
+    descriptor = os.open(path, flags)
+    opened.append(descriptor)
+    return descriptor
+cli.os = SimpleNamespace(
+    devnull=os.devnull, O_WRONLY=os.O_WRONLY,
+    open=allocate, dup2=os.dup2, close=os.close,
+)
+for _ in range(10):
+    cli._silence_stream(sys.stdout)
+    sys.stdout.write('discarded output')
+    sys.stdout.flush()
+    try:
+        os.fstat(opened[-1])
+    except OSError:
+        pass
+    else:
+        raise AssertionError('temporary descriptor leaked')
+assert len(opened) == 10
+""",
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
     )
-    reader, writer = os.pipe()
-    os.close(reader)
-    with os.fdopen(writer, "w") as stream:
-        for _ in range(10):
-            cli._silence_stream(stream)
-            stream.write("discarded output")
-            stream.flush()
-            with pytest.raises(OSError):
-                os.fstat(opened[-1])
-    assert len(opened) == 10
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == result.stderr == b""

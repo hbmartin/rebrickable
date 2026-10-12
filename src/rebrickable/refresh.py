@@ -166,34 +166,86 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
         connection.close()
 
 
-def _snapshot_name(path: Path) -> str:
-    return path.name
+_ACTIVATION_MARKER = ".rebrickable-activation.json"
+
+
+def _activation_history(
+    paths: CatalogPaths, current_id: str | None
+) -> tuple[str, tuple[str, ...]]:
+    """Read proven activation order, or bootstrap conservatively from the pointer."""
+    try:
+        pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+        if not isinstance(pointer, dict):
+            raise TypeError("invalid activation metadata")
+        generation = pointer["_activation_generation"]
+        history = pointer["_activation_history"]
+        if (
+            not isinstance(generation, str)
+            or not isinstance(history, list)
+            or not history
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item in {".", ".."}
+                or "/" in item
+                or "\\" in item
+                for item in history
+            )
+            or len(set(history)) != len(history)
+            or pointer.get("snapshot_id") != history[0]
+            or (current_id is not None and current_id != history[0])
+        ):
+            raise ValueError("invalid activation metadata")
+        uuid.UUID(generation)
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError):
+        return uuid.uuid4().hex, (current_id,) if current_id is not None else ()
+    return generation, tuple(history)
+
+
+def _managed_snapshot(path: Path, generation: str | None) -> bool:
+    if generation is None:
+        return False
+    try:
+        marker = json.loads((path / _ACTIVATION_MARKER).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return marker == {"generation": generation}
 
 
 def _prune_snapshots(
-    paths: CatalogPaths, active_id: str, retain: int, *, previous_id: str | None = None
+    paths: CatalogPaths,
+    active_id: str,
+    retain: int,
+    *,
+    previous_id: str | None = None,
+    generation: str | None = None,
+    history: tuple[str, ...] = (),
 ) -> None:
     """Remove superseded snapshots and orphaned partial transfers."""
     try:
         children = tuple(paths.snapshots_dir.iterdir())
     except FileNotFoundError:
         return
-    named = sorted(
-        (child for child in children if child.is_dir() and child.name != active_id),
-        key=_snapshot_name,
-        reverse=True,
-    )
+    if _read_pointer(paths) != active_id:
+        return
     keep = {active_id}
     if retain > 1 and previous_id is not None:
         keep.add(previous_id)
-    for child in named:
-        if child.name.startswith("."):
-            continue
+    existing = {child.name for child in children if child.is_dir()}
+    for snapshot_id in history:
         if len(keep) >= retain:
             break
-        keep.add(child.name)
+        if snapshot_id in existing:
+            keep.add(snapshot_id)
     for child in children:
         if not child.is_dir() or child.name in keep:
+            continue
+        if (
+            not child.name.startswith(".incoming-")
+            and child.name not in history
+            and not _managed_snapshot(child, generation)
+        ):
+            # An older implementation may have activated this directory.
             continue
         try:
             shutil.rmtree(child)
@@ -212,12 +264,41 @@ def _promote_snapshot(
 ) -> None:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
+        generation, prior_history = _activation_history(paths, previous_id)
+        history = tuple(
+            dict.fromkeys(
+                (
+                    destination.name,
+                    *((previous_id,) if previous_id is not None else ()),
+                    *(
+                        item
+                        for item in prior_history
+                        if (paths.snapshots_dir / item).is_dir()
+                    ),
+                )
+            )
+        )
         previous = paths.database_for(previous_id) if previous_id is not None else None
         _carry_crosswalk(previous, staging / paths.configured_database.name)
+        _atomic_json(staging / _ACTIVATION_MARKER, {"generation": generation})
         shutil.move(staging, incoming)
         durable_replace(incoming, destination)
-        _atomic_json(paths.active_pointer, {"snapshot_id": destination.name})
-        _prune_snapshots(paths, destination.name, retain, previous_id=previous_id)
+        _atomic_json(
+            paths.active_pointer,
+            {
+                "snapshot_id": destination.name,
+                "_activation_generation": generation,
+                "_activation_history": history,
+            },
+        )
+        _prune_snapshots(
+            paths,
+            destination.name,
+            retain,
+            previous_id=previous_id,
+            generation=generation,
+            history=history,
+        )
     except BaseException:
         # A durable pointer replacement can succeed before a later fsync fails.
         # Remove the candidate only if the pointer proves it is inactive.
@@ -395,7 +476,12 @@ async def _refresh_attempt(
                 "another process holds the catalog promotion lock"
             ) from exc
         try:
-            current_state = await catalog_state(config, verify=True)
+            current_state = await catalog_state(config)
+            if current_state.status is CatalogStatus.READY and (
+                prior_state.status is not CatalogStatus.READY
+                or current_state.snapshot_id != prior_state.snapshot_id
+            ):
+                current_state = await catalog_state(config, verify=True)
             previous_id = (
                 current_state.snapshot_id
                 if current_state.status is CatalogStatus.READY

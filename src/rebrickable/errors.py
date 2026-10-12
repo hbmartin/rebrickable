@@ -54,7 +54,7 @@ class CatalogImportError(RebrickableError):
 
 
 @dataclass(frozen=True, slots=True)
-class ApiError(RebrickableError):
+class ApiError(RebrickableError):  # garuff: ignore[GAC009]
     """Safe, structured details about a failed API operation."""
 
     status: int | None
@@ -79,6 +79,19 @@ class ApiError(RebrickableError):
     def __str__(self) -> str:
         status = "transport" if self.status is None else str(self.status)
         return f"{self.operation_id} failed ({status}): {self.detail}"
+
+    @override
+    def add_note(self, note: str, /) -> None:
+        """Append exception context without making structured fields mutable."""
+        if isinstance(note, str) and not hasattr(self, "__notes__"):
+            object.__setattr__(self, "__notes__", [])
+        BaseException.add_note(self, note)
+
+    @override
+    def __setstate__(self, state: dict[str, Any] | None, /) -> None:
+        """Restore exception metadata rather than frozen-dataclass field state."""
+        if state is not None:
+            self.__dict__.update(state)
 
 
 def _rebuild_api_error(
@@ -137,10 +150,11 @@ class ApiDecodeError(ApiError):
         )
 
     @override
-    def __reduce__(self) -> tuple[object, tuple[str, str, str]]:
+    def __reduce__(self) -> tuple[object, tuple[str, str, str], dict[str, object]]:
         return (
             _rebuild_api_decode_error,
             (self.path_template, self.operation_id, self.detail),
+            {"__notes__": list(self.__notes__)} if hasattr(self, "__notes__") else {},
         )
 
 

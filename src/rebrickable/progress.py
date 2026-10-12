@@ -25,7 +25,7 @@ class ProgressUnit(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ProgressEvent:
+class ProgressEvent:  # garuff: ignore[GAC009]
     stage: ProgressStage
     dataset: str | None = None
     current: int | None = None

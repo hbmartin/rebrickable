@@ -199,7 +199,14 @@ async def test_worker_self_cancellation() -> None:
 
 @pytest.mark.parametrize(
     "phase",
-    ["_carry_crosswalk", "move", "durable_replace", "_atomic_json", "_prune_snapshots"],
+    [
+        "_carry_crosswalk",
+        "activation_marker",
+        "move",
+        "durable_replace",
+        "_atomic_json",
+        "_prune_snapshots",
+    ],
 )
 @pytest.mark.parametrize("retain", [1, 2])
 async def test_cancelled_promotion_leaves_complete_readable_snapshot(
@@ -215,19 +222,22 @@ async def test_cancelled_promotion_leaves_complete_readable_snapshot(
     release = threading.Event()
     loop = asyncio.get_running_loop()
     target = module.shutil if phase == "move" else module
-    original: Callable[..., Any] = getattr(target, phase)
+    attribute = "_atomic_json" if phase == "activation_marker" else phase
+    original: Callable[..., Any] = getattr(target, attribute)
 
     def delayed(*args: Any, **kwargs: Any) -> Any:
         if phase == "durable_replace" and not args[0].is_dir():
             return original(*args, **kwargs)
         if phase == "_atomic_json" and args[0] != paths.active_pointer:
             return original(*args, **kwargs)
+        if phase == "activation_marker" and args[0].name != module._ACTIVATION_MARKER:
+            return original(*args, **kwargs)
         loop.call_soon_threadsafe(started.set)
         if not release.wait(5):
             raise TimeoutError("test did not release worker")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(target, phase, delayed)
+    monkeypatch.setattr(target, attribute, delayed)
     monkeypatch.setattr(
         module, "_download_one", downloader(snapshot_sources(catalog_config))
     )
@@ -245,7 +255,7 @@ async def test_cancelled_promotion_leaves_complete_readable_snapshot(
         await task
     assert paths.active_pointer.read_bytes() != before
     state = await catalog_state(catalog_config, verify=True)
-    expected = {state.snapshot_id}
+    expected = {state.snapshot_id, "zzzz-unactivated-orphan"}
     if retain == 2:
         expected.add("fixture-snapshot")
         assert paths.database_for("fixture-snapshot").is_file()

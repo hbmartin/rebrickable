@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class Theme:
+class Theme:  # garuff: ignore[GAC009]
     id: int
     name: str
     parent_id: int | None
@@ -25,7 +25,7 @@ class Theme:
 
 
 @dataclass(frozen=True, slots=True)
-class Color:
+class Color:  # garuff: ignore[GAC009]
     id: int
     name: str
     rgb: str
@@ -37,13 +37,13 @@ class Color:
 
 
 @dataclass(frozen=True, slots=True)
-class PartCategory:
+class PartCategory:  # garuff: ignore[GAC009]
     id: int
     name: str
 
 
 @dataclass(frozen=True, slots=True)
-class Part:
+class Part:  # garuff: ignore[GAC009]
     part_num: str
     name: str
     category_id: int
@@ -55,7 +55,7 @@ class Part:
 
 
 @dataclass(frozen=True, slots=True)
-class PartRelationship:
+class PartRelationship:  # garuff: ignore[GAC009]
     type: RelationshipType
     raw_type: str
     child_part_num: str
@@ -63,7 +63,7 @@ class PartRelationship:
 
 
 @dataclass(frozen=True, slots=True)
-class PartUsage:
+class PartUsage:  # garuff: ignore[GAC009]
     """Aggregate newest-inventory usage for a canonical part."""
 
     part: Part
@@ -77,7 +77,7 @@ class PartUsage:
 
 
 @dataclass(frozen=True, slots=True)
-class Element:
+class Element:  # garuff: ignore[GAC009]
     element_id: str
     part_num: str
     color_id: int
@@ -85,7 +85,7 @@ class Element:
 
 
 @dataclass(frozen=True, slots=True)
-class Set:
+class Set:  # garuff: ignore[GAC009]
     set_num: str
     name: str
     year: int
@@ -99,7 +99,7 @@ class Set:
 
 
 @dataclass(frozen=True, slots=True)
-class Minifig:
+class Minifig:  # garuff: ignore[GAC009]
     fig_num: str
     name: str
     num_parts: int
@@ -111,7 +111,7 @@ class Minifig:
 
 
 @dataclass(frozen=True, slots=True)
-class InventoryPart:
+class InventoryPart:  # garuff: ignore[GAC009]
     part: Part
     color: Color
     quantity: int
@@ -121,19 +121,19 @@ class InventoryPart:
 
 
 @dataclass(frozen=True, slots=True)
-class InventorySet:
+class InventorySet:  # garuff: ignore[GAC009]
     set: Set
     quantity: int
 
 
 @dataclass(frozen=True, slots=True)
-class InventoryMinifig:
+class InventoryMinifig:  # garuff: ignore[GAC009]
     minifig: Minifig
     quantity: int
 
 
 @dataclass(frozen=True, slots=True)
-class Inventory:
+class Inventory:  # garuff: ignore[GAC009]
     owner_num: str
     version: int
     parts: tuple[InventoryPart, ...]
@@ -142,7 +142,7 @@ class Inventory:
 
 
 @dataclass(frozen=True, slots=True)
-class InventoryVersion:
+class InventoryVersion:  # garuff: ignore[GAC009]
     id: int
     owner_num: str
     version: int
@@ -150,7 +150,7 @@ class InventoryVersion:
 
 
 @dataclass(frozen=True, slots=True)
-class SetOccurrence:
+class SetOccurrence:  # garuff: ignore[GAC009]
     """One part/color occurrence in a set's newest inventory."""
 
     set: Set
@@ -161,7 +161,7 @@ class SetOccurrence:
 
 
 @dataclass(frozen=True, slots=True)
-class InventoryDiffRow:
+class InventoryDiffRow:  # garuff: ignore[GAC009]
     part: Part
     color: Color
     before_quantity: int
@@ -179,7 +179,7 @@ class InventoryDiffRow:
 
 
 @dataclass(frozen=True, slots=True)
-class InventoryDiff(Sequence[InventoryDiffRow]):
+class InventoryDiff(Sequence[InventoryDiffRow]):  # garuff: ignore[GAC009]
     owner_num: str
     before_version: int
     after_version: int
@@ -207,13 +207,13 @@ class InventoryDiff(Sequence[InventoryDiffRow]):
 
 
 @dataclass(frozen=True, slots=True)
-class BomContribution:
+class BomContribution:  # garuff: ignore[GAC009]
     quantity: int
     owner_path: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class BomRow:
+class BomRow:  # garuff: ignore[GAC009]
     part: Part
     color: Color
     quantity: int
@@ -221,7 +221,7 @@ class BomRow:
 
 
 @dataclass(frozen=True, slots=True)
-class SkippedInventory:
+class SkippedInventory:  # garuff: ignore[GAC009]
     """A contained set or minifig whose own inventory could not be expanded."""
 
     owner_num: str
@@ -230,7 +230,7 @@ class SkippedInventory:
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogBom(Sequence[BomRow]):
+class CatalogBom(Sequence[BomRow]):  # garuff: ignore[GAC009]
     """Recursive BOM rows plus diagnostics for unexpandable sub-items."""
 
     rows: tuple[BomRow, ...]

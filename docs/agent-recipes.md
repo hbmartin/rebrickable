@@ -73,8 +73,9 @@ The `[tool.garuff]` configuration excludes five conventions:
 All other rules remain enabled for evaluation, including checks of generated
 Python files. `GAC009` enforces keyword-only construction for internal records,
 including `Parameter`, `Operation`, `DatasetDefinition`, and `CatalogPaths`.
-Precise per-file exclusions preserve positional constructors for public records,
+Class-line `# garuff: ignore[GAC009]` directives preserve positional constructors for public records,
 including configuration, progress events, domain values, and API exceptions.
+New internal records in those same modules remain subject to GAC009.
 Generated registry or query-type changes must go through their generator. Protocol bodies use descriptive docstrings (`GAC003`), and
 docstrings use single backticks (`GAC004`). Avoid applying unreviewed automatic
 fixes, especially after changing the active rules or pinned revision.

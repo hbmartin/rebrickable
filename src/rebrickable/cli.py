@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import io
 import json
 import os
@@ -11,6 +12,8 @@ import platform
 import sqlite3
 import sys
 from contextlib import suppress
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from importlib import metadata
 from importlib.resources import files
 from pathlib import Path
@@ -53,11 +56,48 @@ from rebrickable.urls import minifig_url, part_url, set_url
 class _StdoutPipeClosedError(Exception):
     """Stop producing output after its consumer closes the pipe."""
 
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(status)
+
+
+@dataclass(slots=True, kw_only=True)
+class _OutputState:
+    failed: list[IO[str]] = field(default_factory=list)
+
+
+_output_state: ContextVar[_OutputState | None] = ContextVar("cli_output", default=None)
+
+
+def _stream_failed(stream: IO[str]) -> bool:
+    state = _output_state.get()
+    return state is not None and any(stream is item for item in state.failed)
+
+
+def _is_broken_pipe(error: OSError) -> bool:
+    return (
+        isinstance(error, BrokenPipeError)
+        or error.errno == errno.EPIPE
+        or getattr(error, "winerror", None) in {109, 232, 233}
+    )
+
 
 def _silence_stream(stream: IO[str]) -> None:
     """Prevent a failed stream from flushing again during interpreter shutdown."""
+    expected = next(
+        (
+            descriptor
+            for name, descriptor in (("__stdout__", 1), ("__stderr__", 2))
+            if stream is getattr(sys, name, None)
+        ),
+        None,
+    )
+    if expected is None:
+        return
     try:
         descriptor = stream.fileno()
+        if descriptor != expected:
+            return
         devnull = os.open(os.devnull, os.O_WRONLY)
         try:
             os.dup2(devnull, descriptor)
@@ -71,49 +111,69 @@ def _silence_stream(stream: IO[str]) -> None:
         with suppress(AttributeError, OSError, ValueError):
             if isinstance(stream, io.TextIOWrapper):
                 getattr(stream.buffer, "raw", stream.buffer).close()
-            else:
-                stream.close()
 
 
-def _write_stdout(value: str | bytes) -> None:
+def _fail_stream(stream: IO[str]) -> None:
+    state = _output_state.get()
+    if state is not None:
+        state.failed.append(stream)
+    _silence_stream(stream)
+
+
+def _write_stdout(value: str | bytes, *, status: int = ExitCode.OK) -> None:
     stream = sys.stdout
-    if stream is None or stream.closed:
-        raise _StdoutPipeClosedError
+    if stream is None:
+        raise _StdoutPipeClosedError(status)
     try:
+        if stream.closed or _stream_failed(stream):
+            raise _StdoutPipeClosedError(status)
         if isinstance(value, bytes):
             stream.buffer.write(value)
         else:
             stream.write(value)
-    except BrokenPipeError:
-        _silence_stream(stream)
-        raise _StdoutPipeClosedError from None
+    except (AttributeError, OSError, ValueError) as exc:
+        _fail_stream(stream)
+        if isinstance(exc, OSError):
+            if _is_broken_pipe(exc):
+                raise _StdoutPipeClosedError(status) from None
+            raise
+        raise OSError(f"unable to write stdout: {exc}") from exc
 
 
-def _print_stdout(value: object) -> None:
-    _write_stdout(f"{value}\n")
+def _print_stdout(value: object, *, status: int = ExitCode.OK) -> None:
+    _write_stdout(f"{value}\n", status=status)
 
 
 def _write_stderr(message: str) -> None:
     stream = sys.stderr
-    if stream is None or stream.closed:
+    if stream is None:
         return
     try:
+        if stream.closed or _stream_failed(stream):
+            return
         stream.write(message)
-    except BrokenPipeError:
-        _silence_stream(stream)
+    except (AttributeError, OSError, ValueError):
+        _fail_stream(stream)
 
 
 def _print_stderr(message: str) -> None:
     _write_stderr(f"{message}\n")
 
 
-def _flush_stream(stream: IO[str] | None) -> None:
-    if stream is None or stream.closed:
-        return
+def _flush_stream(
+    stream: IO[str] | None,
+) -> AttributeError | OSError | ValueError | None:
+    if stream is None:
+        return None
     try:
+        if stream.closed or _stream_failed(stream):
+            return None
         stream.flush()
-    except BrokenPipeError:
-        _silence_stream(stream)
+    except (AttributeError, OSError, ValueError) as exc:
+        _fail_stream(stream)
+        if not isinstance(exc, OSError) or not _is_broken_pipe(exc):
+            return exc
+    return None
 
 
 class _MessageWriter(Protocol):
@@ -124,23 +184,24 @@ class _MessageWriter(Protocol):
 class _ArgumentParser(argparse.ArgumentParser):
     @override
     def error(self, message: str) -> Never:
-        _write_stderr(self.format_usage())
+        self._print_message(self.format_usage(), sys.stderr)
         self.exit(2, f"{self.prog}: error: {message}\n")
 
     @override
     def _print_message(self, message: str, file: _MessageWriter | None = None) -> None:
         if message:
-            if file is sys.stdout:
-                _write_stdout(message)
-            elif file is None or file is sys.stderr:
-                _write_stderr(message)
-            else:
-                file.write(message)
+            with suppress(AttributeError, OSError, _StdoutPipeClosedError):
+                if file is sys.stdout:
+                    _write_stdout(message)
+                elif file is None or file is sys.stderr:
+                    _write_stderr(message)
+                else:
+                    file.write(message)
 
     @override
     def exit(self, status: int = 0, message: str | None = None) -> Never:
         if message:
-            _write_stderr(message)
+            self._print_message(message, sys.stderr)
         raise SystemExit(status)
 
 
@@ -317,17 +378,21 @@ def _check_part_flags(args: argparse.Namespace) -> None:
 
 
 def _print_entity(
-    value: Any, *, json_output: bool = False, output_format: str = "table"
+    value: Any,
+    *,
+    json_output: bool = False,
+    output_format: str = "table",
+    status: int = ExitCode.OK,
 ) -> None:
     if json_output or output_format == "json":
-        _write_stdout(to_json(value, schema="rebrickable.entity"))
+        _write_stdout(to_json(value, schema="rebrickable.entity"), status=status)
     elif output_format == "yaml":
         data = json.loads(to_json(value, schema="rebrickable.entity"))["data"]
-        _write_stdout(yaml.safe_dump(data, sort_keys=True))
+        _write_stdout(yaml.safe_dump(data, sort_keys=True), status=status)
     elif output_format == "csv":
-        _write_stdout(to_csv(value))
+        _write_stdout(to_csv(value), status=status)
     else:
-        _print_stdout(value)
+        _print_stdout(value, status=status)
 
 
 def _read_bom(path: Path, args: argparse.Namespace) -> Bom:
@@ -433,14 +498,18 @@ async def _run(args: argparse.Namespace) -> int:
     async with await RebrickableSession.open(config) as session:
         if args.command == "status":
             state = await session.state(verify=True)
-            _print_entity(
-                state, json_output=args.json, output_format=args.output_format
-            )
-            return (
+            status = (
                 ExitCode.OK
                 if state.status is CatalogStatus.READY
                 else ExitCode.MISSING_DATA
             )
+            _print_entity(
+                state,
+                json_output=args.json,
+                output_format=args.output_format,
+                status=status,
+            )
+            return status
         if args.command == "refresh":
             report = await session.refresh_catalog(
                 force=args.force, progress=None if args.json else _progress
@@ -518,16 +587,18 @@ async def _run(args: argparse.Namespace) -> int:
                     "api_key_configured": bool(config.api_key),
                     "diagnostics": state.diagnostics,
                 }
-                _print_entity(report, output_format=args.output_format)
-                return ExitCode.INVALID_INPUT if conflict else ExitCode.OK
+                status = ExitCode.INVALID_INPUT if conflict else ExitCode.OK
+                _print_entity(report, output_format=args.output_format, status=status)
+                return status
             if args.catalog_command == "path":
                 state = await session.state()
-                _print_stdout(state.database_path)
-                return (
+                status = (
                     ExitCode.OK
                     if state.status is CatalogStatus.READY
                     else ExitCode.MISSING_DATA
                 )
+                _print_stdout(state.database_path, status=status)
+                return status
             if args.catalog_command == "versions":
                 value = await session.inventories.versions(args.owner_num)
             else:
@@ -544,12 +615,13 @@ async def _run(args: argparse.Namespace) -> int:
             if args.bom_command == "validate":
                 bom = _read_bom(args.input, args)
                 report = await session.validate_bom(bom)
-                _print_entity(report, output_format=args.output_format)
-                return (
+                status = (
                     ExitCode.INCOMPLETE_TRANSLATION
                     if report.unavailable_count
                     else ExitCode.OK
                 )
+                _print_entity(report, output_format=args.output_format, status=status)
+                return status
             value = _read_bom(args.input, args)
             _print_entity(value, output_format=args.output_format)
             return ExitCode.OK
@@ -557,54 +629,74 @@ async def _run(args: argparse.Namespace) -> int:
             report = await session.ldraw.translate_model_path(
                 args.model, library_path=args.ldraw_library
             )
-            if args.csv or args.output_format == "csv":
-                _write_stdout(
-                    translation_to_csv(report, unresolved_only=args.unresolved_only)
-                )
-            elif args.json:
-                value = report.incomplete_rows if args.unresolved_only else report
-                _write_stdout(to_json(value, schema="rebrickable.ldraw-translation"))
-            else:
-                _write_stdout(
-                    translation_table(report, unresolved_only=args.unresolved_only)
-                )
-            if not args.json:
-                for note in report.diagnostics:
-                    _print_stderr(f"[ldraw] {note}")
-            return (
+            status = (
                 ExitCode.OK
                 if all(row.status is MappingStatus.RESOLVED for row in report.rows)
                 else ExitCode.INCOMPLETE_TRANSLATION
             )
+            if args.csv or args.output_format == "csv":
+                _write_stdout(
+                    translation_to_csv(report, unresolved_only=args.unresolved_only),
+                    status=status,
+                )
+            elif args.json:
+                value = report.incomplete_rows if args.unresolved_only else report
+                _write_stdout(
+                    to_json(value, schema="rebrickable.ldraw-translation"),
+                    status=status,
+                )
+            else:
+                _write_stdout(
+                    translation_table(report, unresolved_only=args.unresolved_only),
+                    status=status,
+                )
+            if not args.json:
+                for note in report.diagnostics:
+                    _print_stderr(f"[ldraw] {note}")
+            return status
     return ExitCode.UNEXPECTED  # pragma: no cover
 
 
 def main(argv: list[str] | None = None) -> int:
+    token = _output_state.set(_OutputState())
+    status = int(ExitCode.OK)
+    parser_exit: SystemExit | None = None
     try:
         parser = _parser()
         # Normalize IntEnum exit codes to the public plain-int return contract.
-        return int(asyncio.run(_run(parser.parse_args(argv))))  # pyrefly: ignore[unnecessary-type-conversion]
-    except _StdoutPipeClosedError:
-        return int(ExitCode.OK)
+        status = int(asyncio.run(_run(parser.parse_args(argv))))  # pyrefly: ignore[unnecessary-type-conversion]
+    except SystemExit as exc:
+        parser_exit = exc
+    except _StdoutPipeClosedError as exc:
+        status = int(exc.status)  # pyrefly: ignore[unnecessary-type-conversion]
     except (ValueError, argparse.ArgumentError, OptionalDependencyError) as exc:
         _print_stderr(str(exc))
-        return int(ExitCode.INVALID_INPUT)
+        status = int(ExitCode.INVALID_INPUT)
     except (CatalogUnavailableError, EntityNotFoundError) as exc:
         _print_stderr(str(exc))
-        return int(ExitCode.MISSING_DATA)
+        status = int(ExitCode.MISSING_DATA)
     except ApiError as exc:
         _print_stderr(str(exc))
-        return int(ExitCode.API_FAILURE)
+        status = int(ExitCode.API_FAILURE)
     except RebrickableError as exc:
         _print_stderr(str(exc))
-        return int(ExitCode.UNEXPECTED)
+        status = int(ExitCode.UNEXPECTED)
     except Exception as exc:  # noqa: BLE001 - final CLI diagnostic boundary
         _print_stderr(f"unexpected failure: {exc}")
-        return int(ExitCode.UNEXPECTED)
+        status = int(ExitCode.UNEXPECTED)
 
     finally:
-        _flush_stream(sys.stdout)
-        _flush_stream(sys.stderr)
+        try:
+            failure = _flush_stream(sys.stdout)
+            if failure is not None and parser_exit is None:
+                status = int(ExitCode.UNEXPECTED)
+                _print_stderr(f"unable to flush stdout: {failure}")
+            _flush_stream(sys.stderr)
+        finally:
+            _output_state.reset(token)
+    if parser_exit is not None:
+        raise parser_exit
+    return status
 
 
 if __name__ == "__main__":  # pragma: no cover

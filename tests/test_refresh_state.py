@@ -329,6 +329,8 @@ async def test_promotion_uses_current_snapshot_and_protects_it_from_orphans(
     assert {child.name for child in paths.snapshots_dir.iterdir()} == {
         previous_id,
         report.snapshot_id,
+        "fixture-snapshot",
+        "zzzz-unactivated-orphan",
     }
     with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
         assert connection.execute(

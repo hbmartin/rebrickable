@@ -33,6 +33,10 @@ with `0`, unless the command has already computed a nonzero status. This also
 applies to help and version output. A closed stderr drops further progress and
 diagnostics without interrupting the command or discarding healthy stdout.
 Usage errors retain status `2`, even when their diagnostics cannot be delivered.
+Other errors writing or flushing command output, such as a full disk, return
+`1` regardless of the selected command status. Help and version retain their
+parser status `0` when output fails. In-process calls do not close or redirect
+caller-provided output streams.
 
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
 part-count, category, material, limit, and offset filters. `catalog doctor`

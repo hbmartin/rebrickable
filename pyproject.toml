@@ -83,16 +83,6 @@ constraint-dependencies = ["requests>=2.33.0", "urllib3>=2.8.0"]
 # GAC010 requires docstrings on every helper, special method, overload, and test.
 ignore = ["GAC001", "GAC002", "GAC005", "GAC008", "GAC010"]
 
-[tool.garuff.per-file-ignores]
-# Existing public dataclasses retain positional construction in 1.x.
-"src/rebrickable/bom.py" = ["GAC009"]
-"src/rebrickable/config.py" = ["GAC009"]
-"src/rebrickable/errors.py" = ["GAC009"]
-"src/rebrickable/progress.py" = ["GAC009"]
-"src/rebrickable/types.py" = ["GAC009"]
-"src/rebrickable/catalog/models.py" = ["GAC009"]
-"src/rebrickable/bridge/models.py" = ["GAC009"]
-
 [tool.ruff]
 line-length = 88
 target-version = "py312"
