@@ -222,8 +222,8 @@ async def test_transport_retries_errors_validation_and_close(monkeypatch) -> Non
     monkeypatch.setattr("rebrickable.api.client.random.random", lambda: 0.0)
     transport = SequenceTransport(
         httpx2.ConnectError("down"),
-        FakeResponse({}, status_code=503),
-        FakeResponse({"part_num": "3001", "name": "Brick"}),
+        FakeResponse(payload={}, status_code=503),
+        FakeResponse(payload={"part_num": "3001", "name": "Brick"}),
     )
     api = RebrickableClient(
         api_key="key",
@@ -248,7 +248,7 @@ async def test_transport_retries_errors_validation_and_close(monkeypatch) -> Non
         (418, ApiError),
     ):
         failing = client(
-            FakeTransport(FakeResponse({"detail": "no"}, status_code=status))
+            FakeTransport(FakeResponse(payload={"detail": "no"}, status_code=status))
         )
         with pytest.raises(error):
             await failing.get_part("3001")
@@ -259,7 +259,7 @@ async def test_transport_retries_errors_validation_and_close(monkeypatch) -> Non
         config=Config(request_interval=0, max_retries=0),
         transport=FakeTransport(
             FakeResponse(
-                {"detail": "retry after 2 seconds secret-key secret-token"},
+                payload={"detail": "retry after 2 seconds secret-key secret-token"},
                 status_code=429,
                 headers={"x-request-id": "request-1"},
             )
@@ -274,7 +274,7 @@ async def test_transport_retries_errors_validation_and_close(monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_retry_after_cap_raises_instead_of_sleeping() -> None:
     transport = FakeTransport(
-        FakeResponse({}, status_code=429, headers={"retry-after": "99999"})
+        FakeResponse(payload={}, status_code=429, headers={"retry-after": "99999"})
     )
     api = RebrickableClient(
         api_key="key",
@@ -293,7 +293,9 @@ async def test_redirect_and_non_json_success_are_structured_errors() -> None:
     redirecting = client(
         FakeTransport(
             FakeResponse(
-                {}, status_code=302, headers={"location": "https://rebrickable.com/x"}
+                payload={},
+                status_code=302,
+                headers={"location": "https://rebrickable.com/x"},
             )
         )
     )
@@ -328,7 +330,7 @@ async def test_redirect_and_non_json_success_are_structured_errors() -> None:
 async def test_sync_user_sets_posts_json_array() -> None:
     transport = FakeTransport(
         FakeResponse(
-            [
+            payload=[
                 {"set_num": "8043-1", "quantity": 1},
                 {"set_num": "8110-1", "quantity": 3},
             ]
@@ -357,7 +359,7 @@ async def test_sync_user_sets_posts_json_array() -> None:
 
 @pytest.mark.asyncio
 async def test_sync_user_sets_empty_payload_sends_empty_list() -> None:
-    transport = FakeTransport(FakeResponse([]))
+    transport = FakeTransport(FakeResponse(payload=[]))
     api = client(transport)
     result = await api.sync_user_sets(
         UserSetsSyncRequest(sets=()), confirm_replace=True
@@ -373,7 +375,7 @@ def test_sync_request_model_requires_set_num() -> None:
 
 @pytest.mark.asyncio
 async def test_add_user_sets_sequence_is_single_json_post() -> None:
-    transport = FakeTransport(FakeResponse({"set_num": "1-1"}))
+    transport = FakeTransport(FakeResponse(payload={"set_num": "1-1"}))
     api = client(transport)
     scalar = await api.add_user_sets(SetQuantityRequest(set_num="1-1"))
     assert len(scalar.accepted) == 1
@@ -384,7 +386,9 @@ async def test_add_user_sets_sequence_is_single_json_post() -> None:
     }
     assert transport.requests[-1][2]["json"] is None
 
-    batching = FakeTransport(FakeResponse([{"set_num": "1-1"}, {"set_num": "2-1"}]))
+    batching = FakeTransport(
+        FakeResponse(payload=[{"set_num": "1-1"}, {"set_num": "2-1"}])
+    )
     api = client(batching)
     result = await api.add_user_sets(
         (SetQuantityRequest(set_num="1-1"), SetQuantityRequest(set_num="2-1"))
@@ -400,8 +404,8 @@ async def test_add_user_sets_sequence_is_single_json_post() -> None:
 @pytest.mark.asyncio
 async def test_batch_mutation_error_carries_partial_progress() -> None:
     transport = FakeTransport(
-        FakeResponse({"part_num": "3001"}),
-        FakeResponse({"detail": "no"}, status_code=400),
+        FakeResponse(payload={"part_num": "3001"}),
+        FakeResponse(payload={"detail": "no"}, status_code=400),
     )
     api = client(transport)
     with pytest.raises(BatchMutationError) as captured:
@@ -420,7 +424,7 @@ async def test_batch_mutation_error_carries_partial_progress() -> None:
 @pytest.mark.asyncio
 async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
     part_transport = FakeTransport(
-        FakeResponse([{"part_num": "3001"}, {"part_num": "3002"}])
+        FakeResponse(payload=[{"part_num": "3001"}, {"part_num": "3002"}])
     )
     api = client(part_transport)
     result = await api.add_user_part_list_parts(
@@ -438,7 +442,9 @@ async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
         {"part_num": "3002", "color_id": 1, "quantity": 2},
     ]
 
-    set_transport = FakeTransport(FakeResponse({"accepted": [{"set_num": "1-1"}]}))
+    set_transport = FakeTransport(
+        FakeResponse(payload={"accepted": [{"set_num": "1-1"}]})
+    )
     api = client(set_transport)
     result = await api.add_user_set_list_sets(
         1,
@@ -454,7 +460,7 @@ async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
 
     skipped_transport = FakeTransport(
         FakeResponse(
-            {
+            payload={
                 "accepted": [{"set_num": "1-1"}],
                 "skipped": [{"set_num": "2-1"}],
                 "rejected": [{"set_num": "3-1", "detail": "invalid"}],
@@ -471,7 +477,7 @@ async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
         1,
     )
 
-    no_content = FakeTransport(FakeResponse({}, status_code=204))
+    no_content = FakeTransport(FakeResponse(payload={}, status_code=204))
     api = client(no_content)
     result = await api.add_user_sets((SetQuantityRequest(set_num="1-1"),))
     assert result.accepted == result.requested
@@ -479,7 +485,7 @@ async def test_part_and_set_list_sequences_use_one_bulk_request() -> None:
 
 @pytest.mark.asyncio
 async def test_bulk_mutation_scalar_errors_become_unaccepted_records() -> None:
-    transport = FakeTransport(FakeResponse({"errors": ["part not found"]}))
+    transport = FakeTransport(FakeResponse(payload={"errors": ["part not found"]}))
     api = client(transport)
     result = await api.add_user_part_list_parts(
         1, (PartListPartRequest(part_num="9999", color_id=4, quantity=1),)
@@ -492,7 +498,7 @@ async def test_bulk_mutation_scalar_errors_become_unaccepted_records() -> None:
 
 @pytest.mark.asyncio
 async def test_explicit_sequential_batch_helpers_succeed() -> None:
-    transport = FakeTransport(FakeResponse({}), FakeResponse({}))
+    transport = FakeTransport(FakeResponse(payload={}), FakeResponse(payload={}))
     api = client(transport)
     parts = await api.add_user_part_list_parts_sequential(
         1,
@@ -503,7 +509,7 @@ async def test_explicit_sequential_batch_helpers_succeed() -> None:
     )
     assert parts.accepted_count == 2
 
-    transport = FakeTransport(FakeResponse({}), FakeResponse({}))
+    transport = FakeTransport(FakeResponse(payload={}), FakeResponse(payload={}))
     api = client(transport)
     sets = await api.add_user_set_list_sets_sequential(
         1,
@@ -514,7 +520,7 @@ async def test_explicit_sequential_batch_helpers_succeed() -> None:
 
 @pytest.mark.asyncio
 async def test_send_json_body_validation_and_wire_shape() -> None:
-    transport = FakeTransport(FakeResponse([{"set_num": "1-1"}]))
+    transport = FakeTransport(FakeResponse(payload=[{"set_num": "1-1"}]))
     api = client(transport)
     path = {"user_token": "user-secret"}
     with pytest.raises(TypeError, match="mutually exclusive"):
@@ -557,7 +563,9 @@ async def test_pagination_cycle_and_per_call_token_redaction() -> None:
         "previous": None,
         "results": [],
     }
-    looping = client(FakeTransport(FakeResponse(loop_page), FakeResponse(loop_page)))
+    looping = client(
+        FakeTransport(FakeResponse(payload=loop_page), FakeResponse(payload=loop_page))
+    )
     with pytest.raises(PaginationCycleError) as cycle:
         async for _ in looping.iter_user_sets():
             pass
@@ -568,7 +576,9 @@ async def test_pagination_cycle_and_per_call_token_redaction() -> None:
         api_key="key",
         config=Config(request_interval=0, max_retries=0),
         transport=FakeTransport(
-            FakeResponse({"detail": "unknown token percall-secret"}, status_code=404)
+            FakeResponse(
+                payload={"detail": "unknown token percall-secret"}, status_code=404
+            )
         ),
     )
     with pytest.raises(ApiError) as captured:
@@ -580,12 +590,12 @@ async def test_pagination_cycle_and_per_call_token_redaction() -> None:
 def test_retry_after_decode_and_user_token_edges() -> None:
     fixed = datetime(2026, 8, 1, tzinfo=UTC)
     header = format_datetime(fixed + timedelta(seconds=30))
-    response = FakeResponse({}, headers={"retry-after": header})
+    response = FakeResponse(payload={}, headers={"retry-after": header})
     delay = RebrickableClient._retry_after(response, "", now=fixed)
     assert delay == 30.0
     assert (
         RebrickableClient._retry_after(
-            FakeResponse({}, headers={"retry-after": "nonsense"}), "try later"
+            FakeResponse(payload={}, headers={"retry-after": "nonsense"}), "try later"
         )
         is None
     )
@@ -611,17 +621,17 @@ def test_retry_after_decode_and_user_token_edges() -> None:
 
 @pytest.mark.asyncio
 async def test_decode_failure_204_and_pagination_cycle() -> None:
-    invalid = client(FakeTransport(FakeResponse({"name": "missing id"})))
+    invalid = client(FakeTransport(FakeResponse(payload={"name": "missing id"})))
     with pytest.raises(ApiDecodeError):
         await invalid.get_color(4)
 
-    deleted = client(FakeTransport(FakeResponse({}, status_code=204)))
+    deleted = client(FakeTransport(FakeResponse(payload={}, status_code=204)))
     assert (await deleted.delete_user_set("1-1")).extra == {}
 
     looping = client(
         FakeTransport(
             FakeResponse(
-                {
+                payload={
                     "count": 0,
                     "next": "https://rebrickable.com/api/v3/lego/colors/?page=2",
                     "previous": None,
@@ -629,7 +639,7 @@ async def test_decode_failure_204_and_pagination_cycle() -> None:
                 }
             ),
             FakeResponse(
-                {
+                payload={
                     "count": 0,
                     "next": "https://rebrickable.com/api/v3/lego/colors/?page=2",
                     "previous": None,
@@ -652,8 +662,8 @@ async def test_explicit_mutation_retry_policy_and_secret_repr(
 
     monkeypatch.setattr("rebrickable.api.client.asyncio.sleep", no_sleep)
     transport = FakeTransport(
-        FakeResponse({}, status_code=503),
-        FakeResponse({"id": 1, "name": "List"}),
+        FakeResponse(payload={}, status_code=503),
+        FakeResponse(payload={"id": 1, "name": "List"}),
     )
     api = RebrickableClient(
         api_key="key",

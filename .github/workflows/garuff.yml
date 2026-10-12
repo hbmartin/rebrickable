@@ -1,0 +1,66 @@
+name: Garuff (advisory)
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  garuff:
+    name: Experimental garuff check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Findings and failures stay visible without blocking the required checks.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run pinned garuff and record results
+        shell: bash
+        env:
+          # No packaged release yet: review the rules and configuration before updating.
+          GARUFF_REVISION: 7d126c00f13b4d94f39f1107934089241ab7a6a1
+        run: |
+          mkdir -p garuff-report
+          set +e
+          uv tool run --python 3.14 \
+            --from "garuff @ git+https://github.com/gahjelle/garuff@${GARUFF_REVISION}" \
+            garuff check src scripts tests docs 2>&1 | tee garuff-report/check.txt
+          garuff_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$garuff_status" > garuff-report/exit-code.txt
+          case "$garuff_status" in
+            0) result='No findings.' ;;
+            1) result='Findings or parse/suppression errors; review the report.' ;;
+            *) result='Tool, installation, or configuration failure; review the report.' ;;
+          esac
+          {
+            printf '## Garuff (advisory)\n\n'
+            printf 'Revision: %s\n\n' "$GARUFF_REVISION"
+            printf 'Exit code: %s. %s\n\n' "$garuff_status" "$result"
+            printf 'Full output: the garuff-report artifact and check log.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$garuff_status" -ne 0 ]; then
+            printf '::warning::garuff is advisory (exit %s). %s\n' "$garuff_status" "$result"
+          fi
+          exit "$garuff_status"
+      - name: Upload garuff results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: garuff-report
+          path: garuff-report/
+          if-no-files-found: warn
+          retention-days: 14

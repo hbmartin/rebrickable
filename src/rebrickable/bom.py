@@ -25,7 +25,7 @@ def _part_color_key(key: tuple[PartRef, ColorRef]) -> tuple[str, str, str, int]:
     return part.system.value, part.value, color.system.value, color.value
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BomItem:
     part: PartRef
     color: ColorRef
@@ -36,14 +36,14 @@ class BomItem:
             raise ValueError("BOM quantity must be positive")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DuplicateBomRow:
     part: PartRef
     color: ColorRef
     occurrences: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BomDiffRow:
     part: PartRef
     color: ColorRef
@@ -55,12 +55,12 @@ class BomDiffRow:
         return self.after - self.before
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BomDiff:
     rows: tuple[BomDiffRow, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BomValidationRow:
     item: BomItem
     available: bool
@@ -71,7 +71,7 @@ class BomValidationRow:
     substitutions: tuple[SubstitutionEvidence, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BomValidationReport:
     rows: tuple[BomValidationRow, ...]
     total_quantity: int
@@ -81,7 +81,7 @@ class BomValidationReport:
     substitutable_count: int = 0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Bom:
     items: tuple[BomItem, ...]
     duplicate_rows: tuple[DuplicateBomRow, ...] = ()
@@ -107,9 +107,11 @@ class Bom:
             try:
                 raw.append(
                     BomItem(
-                        PartRef(part_system, row[lookup["part"]]),
-                        ColorRef(color_system, int(row[lookup["color"]])),
-                        int(row[lookup["quantity"]]),
+                        part=PartRef(system=part_system, value=row[lookup["part"]]),
+                        color=ColorRef(
+                            system=color_system, value=int(row[lookup["color"]])
+                        ),
+                        quantity=int(row[lookup["quantity"]]),
                     ),
                 )
             except (TypeError, ValueError) as exc:
@@ -133,9 +135,9 @@ class Bom:
             try:
                 items.append(
                     BomItem(
-                        PartRef(PartSystem.BRICKLINK, part),
-                        ColorRef(ColorSystem.BRICKLINK, int(color)),
-                        int(quantity),
+                        part=PartRef(system=PartSystem.BRICKLINK, value=part),
+                        color=ColorRef(system=ColorSystem.BRICKLINK, value=int(color)),
+                        quantity=int(quantity),
                     ),
                 )
             except ValueError as exc:
@@ -172,12 +174,14 @@ class Bom:
             try:
                 rows.append(
                     BomItem(
-                        PartRef(PartSystem.REBRICKABLE, row[part_column]),
-                        ColorRef(
-                            ColorSystem.REBRICKABLE,
-                            int(row[color_column]),
+                        part=PartRef(
+                            system=PartSystem.REBRICKABLE, value=row[part_column]
                         ),
-                        int(row[quantity_column]),
+                        color=ColorRef(
+                            system=ColorSystem.REBRICKABLE,
+                            value=int(row[color_column]),
+                        ),
+                        quantity=int(row[quantity_column]),
                     )
                 )
             except (TypeError, ValueError) as exc:
@@ -199,12 +203,14 @@ class Bom:
             key=_part_color_key,
         )
         return cls(
-            tuple(
-                BomItem(part, color, quantities[(part, color)])
+            items=tuple(
+                BomItem(part=part, color=color, quantity=quantities[(part, color)])
                 for part, color in ordered
             ),
-            tuple(
-                DuplicateBomRow(part, color, occurrences[(part, color)])
+            duplicate_rows=tuple(
+                DuplicateBomRow(
+                    part=part, color=color, occurrences=occurrences[(part, color)]
+                )
                 for part, color in ordered
                 if occurrences[(part, color)] > 1
             ),
@@ -226,12 +232,12 @@ class Bom:
             key=_part_color_key,
         )
         return BomDiff(
-            tuple(
+            rows=tuple(
                 BomDiffRow(
-                    part,
-                    color,
-                    before.get((part, color), 0),
-                    after.get((part, color), 0),
+                    part=part,
+                    color=color,
+                    before=before.get((part, color), 0),
+                    after=after.get((part, color), 0),
                 )
                 for part, color in keys
                 if before.get((part, color), 0) != after.get((part, color), 0)

@@ -119,14 +119,14 @@ def build_catalog_config(
         raw = source.read_bytes()
         fingerprints.append(
             FileFingerprint(
-                name,
-                f"https://example.test/{source.name}",
-                None,
-                None,
-                len(raw),
-                hashlib.sha256(raw).hexdigest(),
-                row_counts[name],
-                unknown[name],
+                dataset=name,
+                url=f"https://example.test/{source.name}",
+                etag=None,
+                last_modified=None,
+                byte_length=len(raw),
+                sha256=hashlib.sha256(raw).hexdigest(),
+                row_count=row_counts[name],
+                unknown_columns=unknown[name],
             ),
         )
     (snapshot / "manifest.json").write_text(

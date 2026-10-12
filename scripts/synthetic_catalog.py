@@ -84,9 +84,9 @@ async def check_batching(root: Path) -> dict[int, int]:
             bom = Bom.normalize(
                 [
                     BomItem(
-                        PartRef("rebrickable", f"p{i:05}"),
-                        ColorRef("rebrickable", 4),
-                        1,
+                        part=PartRef(system="rebrickable", value=f"p{i:05}"),
+                        color=ColorRef(system="rebrickable", value=4),
+                        quantity=1,
                     )
                     for i in range(count)
                 ]

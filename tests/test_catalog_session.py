@@ -5,7 +5,9 @@ import json
 import shutil
 import sqlite3
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
@@ -325,10 +327,14 @@ async def test_bom_validation_batches_catalog_evidence(catalog_config: Config) -
             Bom.normalize(
                 [
                     BomItem(
-                        PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1
+                        part=PartRef(system="rebrickable", value="3001"),
+                        color=ColorRef(system="rebrickable", value=4),
+                        quantity=1,
                     ),
                     BomItem(
-                        PartRef("rebrickable", "3002"), ColorRef("rebrickable", 4), 1
+                        part=PartRef(system="rebrickable", value="3002"),
+                        color=ColorRef(system="rebrickable", value=4),
+                        quantity=1,
                     ),
                 ]
             )
@@ -346,12 +352,20 @@ async def test_mapping_availability_and_validation(catalog_config: Config) -> No
         relationship = await session.ldraw.resolve_ldraw_part("not-present")
         assert relationship.target_identifier is None
         availability = await session.check_part_color(
-            PartRef("ldraw", "3001"), ColorRef("ldraw", 4)
+            PartRef(system="ldraw", value="3001"), ColorRef(system="ldraw", value=4)
         )
         assert availability.available
         assert availability.element_ids == ("3001004",)
         report = await session.validate_bom(
-            Bom.normalize([BomItem(PartRef("ldraw", "3001"), ColorRef("ldraw", 4), 2)]),
+            Bom.normalize(
+                [
+                    BomItem(
+                        part=PartRef(system="ldraw", value="3001"),
+                        color=ColorRef(system="ldraw", value=4),
+                        quantity=2,
+                    )
+                ]
+            ),
         )
         assert report.exact_count == 0
         assert report.unavailable_count == 0
@@ -509,3 +523,131 @@ async def test_concurrent_first_connection_opens_once(
         )
         assert first is second
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rows",
+    [
+        (),
+        (
+            {"id": 1, "owner_num": "100-1", "version": 1, "is_latest": 0},
+            {"id": 2, "owner_num": "100-1", "version": 2, "is_latest": 1},
+        ),
+    ],
+    ids=["empty-iterator", "history-iterator"],
+)
+async def test_inventory_versions_consumes_cursor_iterators(
+    catalog_config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    rows: tuple[dict[str, str | int], ...],
+) -> None:
+    async with await RebrickableSession.connect(catalog_config) as session:
+        fetchall = AsyncMock(return_value=iter(rows))
+        monkeypatch.setattr(aiosqlite.Cursor, "fetchall", fetchall)
+        if not rows:
+            with pytest.raises(InventoryNotFoundError, match="100-1"):
+                await session.inventories.versions("100-1")
+        else:
+            versions = await session.inventories.versions("100-1")
+            assert [
+                (row.id, row.owner_num, row.version, row.is_latest) for row in versions
+            ] == [
+                (1, "100-1", 1, False),
+                (2, "100-1", 2, True),
+            ]
+        fetchall.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_manifest_without_database_is_unreadable(catalog_config: Config) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    paths.database_for("fixture-snapshot").unlink()
+    state = await catalog_state(catalog_config, verify=True)
+    assert state.status is CatalogStatus.UNREADABLE
+    assert state.snapshot_id == "fixture-snapshot"
+    assert state.diagnostics == ("snapshot database is missing",)
+    with pytest.raises(CatalogUnreadableError):
+        await RebrickableSession.connect(catalog_config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [None, ("page 1 is damaged",)])
+async def test_catalog_verification_rejects_failed_quick_check(
+    catalog_config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    result: tuple[str] | None,
+) -> None:
+    cursor = AsyncMock(spec=aiosqlite.Cursor)
+    cursor.fetchone.return_value = result
+    connection = MagicMock(spec=aiosqlite.Connection)
+    connection.__aenter__.return_value = connection
+    connection.execute = AsyncMock(return_value=cursor)
+    connect = MagicMock(return_value=connection)
+    monkeypatch.setattr("rebrickable.catalog.database.aiosqlite.connect", connect)
+
+    state = await catalog_state(catalog_config, verify=True)
+    assert state.status is CatalogStatus.UNREADABLE
+    assert state.diagnostics == ("SQLite quick_check failed",)
+    connection.execute.assert_awaited_once_with("PRAGMA quick_check")
+    cursor.fetchone.assert_awaited_once()
+    connection.__aexit__.assert_awaited_once()
+    assert connect.call_args.kwargs == {"uri": True}
+    assert connect.call_args.args[0].endswith("?mode=ro")
+
+
+@pytest.mark.asyncio
+async def test_manifest_without_timezone_defaults_to_utc(
+    catalog_config: Config,
+) -> None:
+    manifest = CatalogPaths.from_config(catalog_config).manifest_for("fixture-snapshot")
+    payload = json.loads(manifest.read_text())
+    payload["retrieved_at"] = "2026-08-01T00:00:00"
+    manifest.write_text(json.dumps(payload))
+
+    state = await catalog_state(catalog_config, verify=True)
+    assert state.status is CatalogStatus.READY
+    assert state.retrieved_at == datetime(2026, 8, 1, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_substitution_direction_and_bounds(catalog_config: Config) -> None:
+    database = CatalogPaths.from_config(catalog_config).database_for("fixture-snapshot")
+    connection = sqlite3.connect(database)
+    try:
+        connection.executemany(
+            "INSERT INTO parts(part_num, name, part_cat_id, material) VALUES (?, ?, ?, ?)",
+            (("3003", "Sibling", 1, "Plastic"), ("3004", "Descendant", 1, "Plastic")),
+        )
+        connection.executemany(
+            "INSERT INTO part_relationships VALUES (?, ?, ?)",
+            (("A", "3003", "3001"), ("A", "3004", "3002")),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    root = PartRef(system="rebrickable", value="3001")
+    async with await RebrickableSession.connect(catalog_config) as session:
+        with pytest.raises(ValueError, match="max_depth"):
+            await session.substitutes(root, max_depth=-1)
+        with pytest.raises(ValueError, match="max_candidates"):
+            await session.substitutes(root, max_candidates=-1)
+        assert await session.substitutes(root, max_depth=0) == ()
+        assert await session.substitutes(root, max_candidates=0) == ()
+        assert await session.substitutes(root, direction="parents") == ()
+        children = await session.substitutes(root, direction="children", max_depth=1)
+        assert [item.candidate.value for item in children] == ["3002", "3003"]
+        assert children[0].path == (root, PartRef(system="rebrickable", value="3002"))
+        assert await session.substitutes(root, max_candidates=1) == children[:1]
+        descendants = await session.substitutes(root, direction="children", max_depth=2)
+        assert [item.candidate.value for item in descendants] == [
+            "3002",
+            "3003",
+            "3004",
+        ]
+        assert descendants[-1].path == (
+            root,
+            PartRef(system="rebrickable", value="3002"),
+            PartRef(system="rebrickable", value="3004"),
+        )

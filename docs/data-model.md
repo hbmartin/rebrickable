@@ -1,6 +1,7 @@
 # Offline catalog and domain model
 
-Every domain result is an immutable, slotted dataclass. Identifiers with possible
+Every domain result is an immutable, slotted dataclass with keyword-only
+construction. Identifiers with possible
 leading zeroes remain strings. Repository facades expose stable `get`, `require`,
 `count`, bounded `list`, and paged asynchronous `iter` methods for parts, sets,
 minifigures, colors, themes, categories, and elements. Required lookups raise
@@ -27,8 +28,8 @@ Use namespace-bearing references when identifiers cross systems:
 ```python
 from rebrickable import ColorRef, PartRef
 
-part = PartRef("ldraw", "99780")
-color = ColorRef("ldraw", 4)
+part = PartRef(system="ldraw", value="99780")
+color = ColorRef(system="ldraw", value=4)
 availability = await session.check_part_color(part, color)
 ```
 

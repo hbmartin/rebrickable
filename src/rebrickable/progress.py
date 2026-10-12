@@ -24,7 +24,7 @@ class ProgressUnit(StrEnum):
     STEPS = "steps"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ProgressEvent:
     stage: ProgressStage
     dataset: str | None = None

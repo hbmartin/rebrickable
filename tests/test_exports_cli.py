@@ -58,22 +58,46 @@ def test_json_serializes_frozen_mappings_and_filters_secrets() -> None:
 
 def _injection_report() -> TranslationReport:
     part = PartMatch(
-        "=cmd|' /C calc'!A0",
-        None,
-        MappingStatus.UNRESOLVED,
-        MappingSource.NONE,
-        0.0,
-        (MatchCandidate("+alt", None, "candidate", 0.5),),
-        "-note",
-        "snap",
+        source_identifier="=cmd|' /C calc'!A0",
+        target_identifier=None,
+        status=MappingStatus.UNRESOLVED,
+        source=MappingSource.NONE,
+        confidence=0.0,
+        candidates=(
+            MatchCandidate(
+                identifier="+alt", name=None, reason="candidate", confidence=0.5
+            ),
+        ),
+        explanation="-note",
+        snapshot_id="snap",
     )
     color = ColorMatch(
-        4, 4, MappingStatus.RESOLVED, MappingSource.RGB, 0.9, (), "ok", "snap"
+        source_identifier=4,
+        target_identifier=4,
+        status=MappingStatus.RESOLVED,
+        source=MappingSource.RGB,
+        confidence=0.9,
+        candidates=(),
+        explanation="ok",
+        snapshot_id="snap",
     )
     row = TranslatedBomRow(
-        part.source_identifier, 4, None, 4, 1, MappingStatus.UNRESOLVED, part, color
+        ldraw_part_num=part.source_identifier,
+        ldraw_color_code=4,
+        rebrickable_part_num=None,
+        rebrickable_color_id=4,
+        quantity=1,
+        status=MappingStatus.UNRESOLVED,
+        part_match=part,
+        color_match=color,
     )
-    return TranslationReport((row,), 0, 0, 1, "snap")
+    return TranslationReport(
+        rows=(row,),
+        resolved_count=0,
+        ambiguous_count=0,
+        unresolved_count=1,
+        snapshot_id="snap",
+    )
 
 
 def test_csv_formula_injection_is_escaped() -> None:
@@ -90,21 +114,44 @@ def test_csv_formula_injection_is_escaped() -> None:
     catalog = catalog_bom_to_csv(
         (
             BomRow(
-                Part("@3001", "Brick", 1, "Plastic"),
-                Color(4, "Red", "C91A09", False, 1, 1, None, None),
-                2,
-                (),
+                part=Part(
+                    part_num="@3001", name="Brick", category_id=1, material="Plastic"
+                ),
+                color=Color(
+                    id=4,
+                    name="Red",
+                    rgb="C91A09",
+                    is_trans=False,
+                    num_parts=1,
+                    num_sets=1,
+                    year_from=None,
+                    year_to=None,
+                ),
+                quantity=2,
+                provenance=(),
             ),
         )
     )
     assert "'@3001" in catalog
 
     bom = Bom.normalize(
-        [BomItem(PartRef("rebrickable", "=3001"), ColorRef("rebrickable", 4), 1)]
+        [
+            BomItem(
+                part=PartRef(system="rebrickable", value="=3001"),
+                color=ColorRef(system="rebrickable", value=4),
+                quantity=1,
+            )
+        ]
     )
     assert "'=3001" in bom.to_rebrickable_csv()
     benign = Bom.normalize(
-        [BomItem(PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4), 1)]
+        [
+            BomItem(
+                part=PartRef(system="rebrickable", value="3001"),
+                color=ColorRef(system="rebrickable", value=4),
+                quantity=1,
+            )
+        ]
     )
     assert benign.to_rebrickable_csv() == "part_num,color_id,quantity\r\n3001,4,1\r\n"
     assert to_csv(({"b": 2, "a": "=1+1"},)) == "a,b\r\n'=1+1,2\r\n"

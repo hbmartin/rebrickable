@@ -68,15 +68,17 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
 ) -> None:
     async with await RebrickableSession.open(catalog_config) as session:
         direct = await session.check_part_color(
-            PartRef("rebrickable", "3001"), ColorRef("rebrickable", 4)
+            PartRef(system="rebrickable", value="3001"),
+            ColorRef(system="rebrickable", value=4),
         )
         assert direct.confidence == "exact/exact"
         unsupported = await session.check_part_color(
-            PartRef("lego", "3001"), ColorRef("bricklink", 4)
+            PartRef(system="lego", value="3001"), ColorRef(system="bricklink", value=4)
         )
         assert not unsupported.available
         relationship_only = await session.check_part_color(
-            PartRef("rebrickable", "3002"), ColorRef("rebrickable", 1)
+            PartRef(system="rebrickable", value="3002"),
+            ColorRef(system="rebrickable", value=1),
         )
         assert not relationship_only.available
         assert relationship_only.relationship_only
@@ -84,17 +86,23 @@ async def test_session_edge_resolution_availability_refresh_and_cycles(
             Bom.normalize(
                 [
                     BomItem(
-                        PartRef("rebrickable", "3002"),
-                        ColorRef("rebrickable", 1),
-                        1,
+                        part=PartRef(system="rebrickable", value="3002"),
+                        color=ColorRef(system="rebrickable", value=1),
+                        quantity=1,
                     )
                 ]
             )
         )
         assert validation.substitutable_count == 1
         assert validation.rows[0].substitutions[0].candidate.value == "3001"
-        assert await session.external_ids(PartRef("bricklink", "missing")) == ()
-        assert await session.substitutes(PartRef("rebrickable", "missing")) == ()
+        assert (
+            await session.external_ids(PartRef(system="bricklink", value="missing"))
+            == ()
+        )
+        assert (
+            await session.substitutes(PartRef(system="rebrickable", value="missing"))
+            == ()
+        )
         assert await session.ldraw.resolve_rebrickable_part("3001")
         reverse = await session.ldraw.resolve_rebrickable_part("3002")
         assert reverse.status is MappingStatus.AMBIGUOUS
@@ -177,19 +185,21 @@ async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
         relationship = await session.ldraw.resolve_ldraw_part("3002")
         assert relationship.status is MappingStatus.AMBIGUOUS
         ambiguous = await session.ldraw.resolve_ldraw_color(
-            LDrawColorInfo(90, "No name", "C91A09", 10)
+            LDrawColorInfo(code=90, name="No name", rgb="C91A09", alpha=10)
         )
         assert ambiguous.status is MappingStatus.AMBIGUOUS
         absent = await session.ldraw.resolve_ldraw_color(
-            LDrawColorInfo(91, "No name", "FFFFFF", 10)
+            LDrawColorInfo(code=91, name="No name", rgb="FFFFFF", alpha=10)
         )
         assert absent.status is MappingStatus.UNRESOLVED
         reverse = await session.ldraw.resolve_rebrickable_color(1)
         assert reverse.status is MappingStatus.AMBIGUOUS
         assert await session.ldraw.find_ldraw_color_candidates(1) == (7, 8)
         report = await session.ldraw.translate_bom(
-            (LDrawBomItemFixture("3002", 90, 1),),
-            colors={90: LDrawColorInfo(90, "No name", "C91A09", 10)},
+            (LDrawBomItemFixture(part_num="3002", color_code=90, quantity=1),),
+            colors={
+                90: LDrawColorInfo(code=90, name="No name", rgb="C91A09", alpha=10)
+            },
         )
         assert report.ambiguous_count == 1
         assert translation_to_csv(report, unresolved_only=True).count("\r\n") == 2
@@ -263,7 +273,7 @@ async def test_mapping_ambiguity_relationship_and_optional_ldraw_success(
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LDrawBomItemFixture:
     part_num: str
     color_code: int
@@ -506,7 +516,7 @@ async def test_client_remaining_pacing_retry_close_and_models(monkeypatch) -> No
     await api._pace()
     assert sleeps
     assert (
-        RebrickableClient._detail(FakeResponse({"message": "no detail"}))
+        RebrickableClient._detail(FakeResponse(payload={"message": "no detail"}))
         == "upstream request failed"
     )
 
@@ -522,8 +532,8 @@ async def test_client_remaining_pacing_retry_close_and_models(monkeypatch) -> No
         api_key="key",
         config=Config(request_interval=0, max_retries=1),
         transport=FakeTransport(
-            FakeResponse({"detail": "after 0 seconds"}, status_code=429),
-            FakeResponse({"part_num": "3001", "name": "Brick"}),
+            FakeResponse(payload={"detail": "after 0 seconds"}, status_code=429),
+            FakeResponse(payload={"part_num": "3001", "name": "Brick"}),
         ),
     )
     assert (await throttled.get_part("3001")).part_num == "3001"
@@ -532,7 +542,9 @@ async def test_client_remaining_pacing_retry_close_and_models(monkeypatch) -> No
         api_key="key",
         config=Config(request_interval=0),
         transport=FakeTransport(
-            FakeResponse({"count": 0, "next": None, "previous": None, "results": []})
+            FakeResponse(
+                payload={"count": 0, "next": None, "previous": None, "results": []}
+            )
         ),
     )
     assert [item async for item in single_page.iter_colors()] == []

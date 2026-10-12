@@ -10,23 +10,19 @@ import httpx2
 
 class ResponseLike(Protocol):
     @property
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    def status_code(self) -> int: ...
+    def status_code(self) -> int:
+        """Return the HTTP response status code."""
 
     @property
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    def headers(self) -> Mapping[str, str]: ...
+    def headers(self) -> Mapping[str, str]:
+        """Expose the response headers."""
 
     @property
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    def text(self) -> str: ...
+    def text(self) -> str:
+        """Return the decoded response body."""
 
-    # Protocol/overload declarations intentionally have no implementation.
-    # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    def json(self) -> Any: ...
+    def json(self) -> Any:
+        """Parse the response body as JSON."""
 
 
 class AsyncTransport(Protocol):
@@ -39,9 +35,8 @@ class AsyncTransport(Protocol):
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         json: Any | None = None,
-        # Protocol declaration intentionally has no implementation.
-        # codeql[py/ineffectual-statement]  # noqa: ERA001 - CodeQL suppression directive
-    ) -> ResponseLike: ...
+    ) -> ResponseLike:
+        """Send an asynchronous HTTP request and return its response."""
 
 
 class HttpxTransport:

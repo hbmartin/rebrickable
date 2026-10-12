@@ -20,11 +20,11 @@ def default_config_file() -> Path:
     return get_config_dir() / "config.yml"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Config:
     """Filesystem and transport settings.
 
-    ``api_key`` may be read from YAML or ``REBRICKABLE_API_KEY``. It is excluded
+    `api_key` may be read from YAML or `REBRICKABLE_API_KEY`. It is excluded
     from reprs and normal writes. API clients still require it as an explicit
     constructor argument.
     """

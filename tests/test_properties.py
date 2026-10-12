@@ -32,7 +32,11 @@ ITEMS = st.lists(
 @given(ITEMS)
 def test_bom_normalization_and_csv_round_trip(rows: list[tuple[str, int, int]]) -> None:
     items = [
-        BomItem(PartRef("rebrickable", part), ColorRef("rebrickable", color), quantity)
+        BomItem(
+            part=PartRef(system="rebrickable", value=part),
+            color=ColorRef(system="rebrickable", value=color),
+            quantity=quantity,
+        )
         for part, color, quantity in rows
     ]
     bom = Bom.normalize(items)
@@ -127,7 +131,7 @@ def test_adversarial_pagination_cycle_is_bounded(pages: int) -> None:
         transport = FakeTransport(
             *(
                 FakeResponse(
-                    {
+                    payload={
                         "count": pages,
                         "previous": None,
                         "next": f"https://rebrickable.com/api/v3/lego/parts/?page={i + 2 if i + 1 < pages else 2}",

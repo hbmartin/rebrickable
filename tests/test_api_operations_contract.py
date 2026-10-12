@@ -1,4 +1,4 @@
-"""Drive every registry operation through the real ``_send``.
+"""Drive every registry operation through the real `_send`.
 
 Each public wrapper is invoked against a fake transport and the captured
 request is validated against the operation registry: HTTP method, fully
@@ -35,7 +35,7 @@ _UNSET = object()
 _PAGE = {"count": 0, "next": None, "previous": None, "results": []}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Case:
     operation_id: str
     method_name: str
@@ -48,208 +48,324 @@ class Case:
 
 
 CASES: tuple[Case, ...] = (
-    Case("lego_colors_list", "list_colors", response=_PAGE),
-    Case("lego_colors_read", "get_color", (4,), response={"id": 4, "name": "Red"}),
+    Case(operation_id="lego_colors_list", method_name="list_colors", response=_PAGE),
     Case(
-        "lego_elements_read",
-        "get_element",
-        ("300121",),
+        operation_id="lego_colors_read",
+        method_name="get_color",
+        args=(4,),
+        response={"id": 4, "name": "Red"},
+    ),
+    Case(
+        operation_id="lego_elements_read",
+        method_name="get_element",
+        args=("300121",),
         response={"element_id": "300121"},
     ),
-    Case("lego_minifigs_list", "list_minifigs", response=_PAGE),
     Case(
-        "lego_minifigs_read",
-        "get_minifig",
-        ("fig-1",),
+        operation_id="lego_minifigs_list", method_name="list_minifigs", response=_PAGE
+    ),
+    Case(
+        operation_id="lego_minifigs_read",
+        method_name="get_minifig",
+        args=("fig-1",),
         response={"set_num": "fig-1", "name": "Fig"},
     ),
-    Case("lego_minifigs_parts_list", "list_minifig_parts", ("fig-1",), response=_PAGE),
-    Case("lego_minifigs_sets_list", "list_minifig_sets", ("fig-1",), response=_PAGE),
-    Case("lego_part_categories_list", "list_part_categories", response=_PAGE),
     Case(
-        "lego_part_categories_read",
-        "get_part_category",
-        (1,),
+        operation_id="lego_minifigs_parts_list",
+        method_name="list_minifig_parts",
+        args=("fig-1",),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_minifigs_sets_list",
+        method_name="list_minifig_sets",
+        args=("fig-1",),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_part_categories_list",
+        method_name="list_part_categories",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_part_categories_read",
+        method_name="get_part_category",
+        args=(1,),
         response={"id": 1, "name": "Bricks"},
     ),
     Case(
-        "lego_parts_list",
-        "list_parts",
+        operation_id="lego_parts_list",
+        method_name="list_parts",
         kwargs={"inc_part_details": True},
         response=_PAGE,
     ),
     Case(
-        "lego_parts_read",
-        "get_part",
-        ("3001",),
+        operation_id="lego_parts_read",
+        method_name="get_part",
+        args=("3001",),
         response={"part_num": "3001", "name": "Brick"},
     ),
-    Case("lego_parts_colors_list", "list_part_colors", ("3001",), response=_PAGE),
-    Case("lego_parts_colors_read", "get_part_color", ("3001", 4)),
     Case(
-        "lego_parts_colors_sets_list",
-        "list_part_color_sets",
-        ("3001", 4),
+        operation_id="lego_parts_colors_list",
+        method_name="list_part_colors",
+        args=("3001",),
         response=_PAGE,
     ),
-    Case("lego_sets_list", "list_sets", response=_PAGE),
     Case(
-        "lego_sets_read", "get_set", ("1-1",), response={"set_num": "1-1", "name": "S"}
+        operation_id="lego_parts_colors_read",
+        method_name="get_part_color",
+        args=("3001", 4),
     ),
-    Case("lego_sets_alternates_list", "list_set_alternates", ("1-1",), response=_PAGE),
-    Case("lego_sets_minifigs_list", "list_set_minifigs", ("1-1",), response=_PAGE),
-    Case("lego_sets_parts_list", "list_set_parts", ("1-1",), response=_PAGE),
-    Case("lego_sets_sets_list", "list_set_sets", ("1-1",), response=_PAGE),
-    Case("lego_themes_list", "list_themes", response=_PAGE),
-    Case("lego_themes_read", "get_theme", (1,), response={"id": 1, "name": "Space"}),
-    Case("swagger_list", "get_openapi_spec"),
     Case(
-        "users__token_create",
-        "create_user_token",
-        (CreateUserTokenRequest(username="u", password="p"),),
+        operation_id="lego_parts_colors_sets_list",
+        method_name="list_part_color_sets",
+        args=("3001", 4),
+        response=_PAGE,
+    ),
+    Case(operation_id="lego_sets_list", method_name="list_sets", response=_PAGE),
+    Case(
+        operation_id="lego_sets_read",
+        method_name="get_set",
+        args=("1-1",),
+        response={"set_num": "1-1", "name": "S"},
+    ),
+    Case(
+        operation_id="lego_sets_alternates_list",
+        method_name="list_set_alternates",
+        args=("1-1",),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_sets_minifigs_list",
+        method_name="list_set_minifigs",
+        args=("1-1",),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_sets_parts_list",
+        method_name="list_set_parts",
+        args=("1-1",),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="lego_sets_sets_list",
+        method_name="list_set_sets",
+        args=("1-1",),
+        response=_PAGE,
+    ),
+    Case(operation_id="lego_themes_list", method_name="list_themes", response=_PAGE),
+    Case(
+        operation_id="lego_themes_read",
+        method_name="get_theme",
+        args=(1,),
+        response={"id": 1, "name": "Space"},
+    ),
+    Case(operation_id="swagger_list", method_name="get_openapi_spec"),
+    Case(
+        operation_id="users__token_create",
+        method_name="create_user_token",
+        args=(CreateUserTokenRequest(username="u", password="p"),),
         response={"user_token": "token-1"},
         expected_data={"username": "u", "password": "p"},
     ),
-    Case("users_badges_list", "list_badges", response=_PAGE),
-    Case("users_badges_read", "get_badge", (1,), response={"id": 1, "name": "Badge"}),
-    Case("users_allparts_list", "list_user_all_parts", response=_PAGE),
-    Case("users_build_read", "get_user_build_requirements", ("1-1",)),
-    Case("users_lost_parts_list", "list_user_lost_parts", response=_PAGE),
+    Case(operation_id="users_badges_list", method_name="list_badges", response=_PAGE),
     Case(
-        "users_lost_parts_create",
-        "add_user_lost_parts",
-        (LostPartRequest(inv_part_id=1),),
+        operation_id="users_badges_read",
+        method_name="get_badge",
+        args=(1,),
+        response={"id": 1, "name": "Badge"},
+    ),
+    Case(
+        operation_id="users_allparts_list",
+        method_name="list_user_all_parts",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_build_read",
+        method_name="get_user_build_requirements",
+        args=("1-1",),
+    ),
+    Case(
+        operation_id="users_lost_parts_list",
+        method_name="list_user_lost_parts",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_lost_parts_create",
+        method_name="add_user_lost_parts",
+        args=(LostPartRequest(inv_part_id=1),),
         response={"id": 1},
         expected_data={"inv_part_id": 1},
     ),
-    Case("users_lost_parts_delete", "delete_user_lost_part", (1,), status=204),
-    Case("users_minifigs_list", "list_user_minifigs", response=_PAGE),
-    Case("users_parts_list", "list_user_parts", response=_PAGE),
-    Case("users_profile_read", "get_user_profile", response={"username": "u"}),
-    Case("users_partlists_list", "list_user_part_lists", response=_PAGE),
     Case(
-        "users_partlists_create",
-        "create_user_part_list",
-        (PartListRequest(name="p"),),
+        operation_id="users_lost_parts_delete",
+        method_name="delete_user_lost_part",
+        args=(1,),
+        status=204,
+    ),
+    Case(
+        operation_id="users_minifigs_list",
+        method_name="list_user_minifigs",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_parts_list", method_name="list_user_parts", response=_PAGE
+    ),
+    Case(
+        operation_id="users_profile_read",
+        method_name="get_user_profile",
+        response={"username": "u"},
+    ),
+    Case(
+        operation_id="users_partlists_list",
+        method_name="list_user_part_lists",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_partlists_create",
+        method_name="create_user_part_list",
+        args=(PartListRequest(name="p"),),
         response={"id": 1, "name": "p"},
         expected_data={"name": "p"},
     ),
     Case(
-        "users_partlists_read",
-        "get_user_part_list",
-        (1,),
+        operation_id="users_partlists_read",
+        method_name="get_user_part_list",
+        args=(1,),
         response={"id": 1, "name": "p"},
     ),
     Case(
-        "users_partlists_update",
-        "replace_user_part_list",
-        (1, PartListRequest(name="p")),
+        operation_id="users_partlists_update",
+        method_name="replace_user_part_list",
+        args=(1, PartListRequest(name="p")),
+        response={"id": 1, "name": "p"},
+        expected_data={"name": "p"},
+    ),
+    Case(
+        operation_id="users_partlists_partial_update",
+        method_name="update_user_part_list",
+        args=(1, PartListUpdateRequest(name="p")),
         response={"id": 1, "name": "p"},
         expected_data={"name": "p"},
     ),
     Case(
-        "users_partlists_partial_update",
-        "update_user_part_list",
-        (1, PartListUpdateRequest(name="p")),
-        response={"id": 1, "name": "p"},
-        expected_data={"name": "p"},
-    ),
-    Case("users_partlists_delete", "delete_user_part_list", (1,), status=204),
-    Case(
-        "users_partlists_parts_list", "list_user_part_list_parts", (1,), response=_PAGE
+        operation_id="users_partlists_delete",
+        method_name="delete_user_part_list",
+        args=(1,),
+        status=204,
     ),
     Case(
-        "users_partlists_parts_create",
-        "add_user_part_list_parts",
-        (1, PartListPartRequest(part_num="3001", color_id=4, quantity=1)),
+        operation_id="users_partlists_parts_list",
+        method_name="list_user_part_list_parts",
+        args=(1,),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_partlists_parts_create",
+        method_name="add_user_part_list_parts",
+        args=(1, PartListPartRequest(part_num="3001", color_id=4, quantity=1)),
         expected_data={"part_num": "3001", "color_id": 4, "quantity": 1},
     ),
     Case(
-        "users_partlists_parts_read",
-        "get_user_part_list_part",
-        (1, "3001", 4),
+        operation_id="users_partlists_parts_read",
+        method_name="get_user_part_list_part",
+        args=(1, "3001", 4),
         response={"quantity": 1},
     ),
     Case(
-        "users_partlists_parts_update",
-        "replace_user_part_list_part",
-        (1, "3001", 4, QuantityRequest(quantity=2)),
+        operation_id="users_partlists_parts_update",
+        method_name="replace_user_part_list_part",
+        args=(1, "3001", 4, QuantityRequest(quantity=2)),
         response={"quantity": 2},
         expected_data={"quantity": 2},
     ),
     Case(
-        "users_partlists_parts_delete",
-        "delete_user_part_list_part",
-        (1, "3001", 4),
+        operation_id="users_partlists_parts_delete",
+        method_name="delete_user_part_list_part",
+        args=(1, "3001", 4),
         status=204,
     ),
-    Case("users_setlists_list", "list_user_set_lists", response=_PAGE),
     Case(
-        "users_setlists_create",
-        "create_user_set_list",
-        (SetListRequest(name="s"),),
+        operation_id="users_setlists_list",
+        method_name="list_user_set_lists",
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_setlists_create",
+        method_name="create_user_set_list",
+        args=(SetListRequest(name="s"),),
         response={"id": 1, "name": "s"},
         expected_data={"name": "s"},
     ),
     Case(
-        "users_setlists_read",
-        "get_user_set_list",
-        (1,),
+        operation_id="users_setlists_read",
+        method_name="get_user_set_list",
+        args=(1,),
         response={"id": 1, "name": "s"},
     ),
     Case(
-        "users_setlists_update",
-        "replace_user_set_list",
-        (1, SetListRequest(name="s")),
+        operation_id="users_setlists_update",
+        method_name="replace_user_set_list",
+        args=(1, SetListRequest(name="s")),
+        response={"id": 1, "name": "s"},
+        expected_data={"name": "s"},
+    ),
+    Case(
+        operation_id="users_setlists_partial_update",
+        method_name="update_user_set_list",
+        args=(1, SetListUpdateRequest(name="s")),
         response={"id": 1, "name": "s"},
         expected_data={"name": "s"},
     ),
     Case(
-        "users_setlists_partial_update",
-        "update_user_set_list",
-        (1, SetListUpdateRequest(name="s")),
-        response={"id": 1, "name": "s"},
-        expected_data={"name": "s"},
+        operation_id="users_setlists_delete",
+        method_name="delete_user_set_list",
+        args=(1,),
+        status=204,
     ),
-    Case("users_setlists_delete", "delete_user_set_list", (1,), status=204),
-    Case("users_setlists_sets_list", "list_user_set_list_sets", (1,), response=_PAGE),
     Case(
-        "users_setlists_sets_create",
-        "add_user_set_list_sets",
-        (1, SetQuantityRequest(set_num="1-1")),
+        operation_id="users_setlists_sets_list",
+        method_name="list_user_set_list_sets",
+        args=(1,),
+        response=_PAGE,
+    ),
+    Case(
+        operation_id="users_setlists_sets_create",
+        method_name="add_user_set_list_sets",
+        args=(1, SetQuantityRequest(set_num="1-1")),
         expected_data={"set_num": "1-1", "quantity": 1, "include_spares": False},
     ),
     Case(
-        "users_setlists_sets_read",
-        "get_user_set_list_set",
-        (1, "1-1"),
+        operation_id="users_setlists_sets_read",
+        method_name="get_user_set_list_set",
+        args=(1, "1-1"),
         response={"set_num": "1-1"},
     ),
     Case(
-        "users_setlists_sets_update",
-        "replace_user_set_list_set",
-        (1, "1-1", SetListSetUpdateRequest(quantity=2, include_spares=True)),
+        operation_id="users_setlists_sets_update",
+        method_name="replace_user_set_list_set",
+        args=(1, "1-1", SetListSetUpdateRequest(quantity=2, include_spares=True)),
         response={"set_num": "1-1"},
         expected_data={"quantity": 2, "include_spares": True},
     ),
     Case(
-        "users_setlists_sets_partial_update",
-        "update_user_set_list_set",
-        (1, "1-1", SetListSetUpdateRequest(quantity=2)),
+        operation_id="users_setlists_sets_partial_update",
+        method_name="update_user_set_list_set",
+        args=(1, "1-1", SetListSetUpdateRequest(quantity=2)),
         response={"set_num": "1-1"},
         expected_data={"quantity": 2},
     ),
     Case(
-        "users_setlists_sets_delete",
-        "delete_user_set_list_set",
-        (1, "1-1"),
+        operation_id="users_setlists_sets_delete",
+        method_name="delete_user_set_list_set",
+        args=(1, "1-1"),
         status=204,
     ),
-    Case("users_sets_list", "list_user_sets", response=_PAGE),
+    Case(operation_id="users_sets_list", method_name="list_user_sets", response=_PAGE),
     Case(
-        "users_sets_create",
-        "add_user_sets",
-        ((SetQuantityRequest(set_num="1-1"), SetQuantityRequest(set_num="2-1")),),
+        operation_id="users_sets_create",
+        method_name="add_user_sets",
+        args=((SetQuantityRequest(set_num="1-1"), SetQuantityRequest(set_num="2-1")),),
         response=[{"set_num": "1-1"}, {"set_num": "2-1"}],
         expected_json=[
             {"set_num": "1-1", "quantity": 1, "include_spares": False},
@@ -257,9 +373,9 @@ CASES: tuple[Case, ...] = (
         ],
     ),
     Case(
-        "users_sets_sync_create",
-        "sync_user_sets",
-        (
+        operation_id="users_sets_sync_create",
+        method_name="sync_user_sets",
+        args=(
             UserSetsSyncRequest(
                 sets=(
                     SetQuantityRequest(set_num="8043-1"),
@@ -274,15 +390,25 @@ CASES: tuple[Case, ...] = (
             {"set_num": "8110-1", "quantity": 2, "include_spares": False},
         ],
     ),
-    Case("users_sets_read", "get_user_set", ("1-1",), response={"set_num": "1-1"}),
     Case(
-        "users_sets_update",
-        "set_user_set_quantity",
-        ("1-1", QuantityRequest(quantity=2)),
+        operation_id="users_sets_read",
+        method_name="get_user_set",
+        args=("1-1",),
+        response={"set_num": "1-1"},
+    ),
+    Case(
+        operation_id="users_sets_update",
+        method_name="set_user_set_quantity",
+        args=("1-1", QuantityRequest(quantity=2)),
         response={"set_num": "1-1"},
         expected_data={"quantity": 2},
     ),
-    Case("users_sets_delete", "delete_user_set", ("1-1",), status=204),
+    Case(
+        operation_id="users_sets_delete",
+        method_name="delete_user_set",
+        args=("1-1",),
+        status=204,
+    ),
 )
 
 
@@ -323,7 +449,9 @@ def _assert_conforms(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.operation_id)
 async def test_operation_request_conforms_to_registry(case: Case) -> None:
-    transport = FakeTransport(FakeResponse(case.response, status_code=case.status))
+    transport = FakeTransport(
+        FakeResponse(payload=case.response, status_code=case.status)
+    )
     api = client(transport)
     await getattr(api, case.method_name)(*case.args, **case.kwargs)
     assert len(transport.requests) == 1

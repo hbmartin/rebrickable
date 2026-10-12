@@ -149,25 +149,27 @@ class LDrawBridge:
             )
             rows.append(
                 TranslatedBomRow(
-                    item.part_num,
-                    item.color_code,
-                    part_match.target_identifier,
-                    color_match.target_identifier,
-                    item.quantity,
-                    status,
-                    part_match,
-                    color_match,
+                    ldraw_part_num=item.part_num,
+                    ldraw_color_code=item.color_code,
+                    rebrickable_part_num=part_match.target_identifier,
+                    rebrickable_color_id=color_match.target_identifier,
+                    quantity=item.quantity,
+                    status=status,
+                    part_match=part_match,
+                    color_match=color_match,
                 ),
             )
         state = await self._session.state()
         snapshot = state.snapshot_id or "unknown"
         return TranslationReport(
-            tuple(rows),
-            sum(row.status is MappingStatus.RESOLVED for row in rows),
-            sum(row.status is MappingStatus.AMBIGUOUS for row in rows),
-            sum(row.status is MappingStatus.UNRESOLVED for row in rows),
-            snapshot,
-            diagnostics,
+            rows=tuple(rows),
+            resolved_count=sum(row.status is MappingStatus.RESOLVED for row in rows),
+            ambiguous_count=sum(row.status is MappingStatus.AMBIGUOUS for row in rows),
+            unresolved_count=sum(
+                row.status is MappingStatus.UNRESOLVED for row in rows
+            ),
+            snapshot_id=snapshot,
+            diagnostics=diagnostics,
         )
 
     async def translate_model(
@@ -194,8 +196,8 @@ class LDrawBridge:
     ) -> TranslationReport:
         """Translate a model file.
 
-        Without color metadata (a ``parts`` catalog or ``library_path`` to a
-        ``parts.lst``), bare color codes resolve only through overrides or
+        Without color metadata (a `parts` catalog or `library_path` to a
+        `parts.lst`), bare color codes resolve only through overrides or
         cached crosswalks.
         """
         try:
@@ -224,7 +226,7 @@ class LDrawBridge:
     async def annotate_pyldraw_bom(
         self, rows: Iterable[object], *, parts: object | None = None
     ) -> TranslationReport:
-        """Translate public ``pyldraw3.BomRow`` objects without mutating them."""
+        """Translate public `pyldraw3.BomRow` objects without mutating them."""
         return await self.translate_bom(
             tuple(LDrawBomItem.from_pyldraw_bom(row) for row in rows),
             colors=_colors_from_parts(parts),
@@ -291,7 +293,7 @@ class LDrawBridge:
 
 
 def _colors_from_parts(parts: object | None) -> dict[int, LDrawColorInfo]:
-    """Build the LDraw color table from a pyldraw3 ``Parts`` catalog."""
+    """Build the LDraw color table from a pyldraw3 `Parts` catalog."""
     mapping = getattr(parts, "colours_by_code", None)
     if not isinstance(mapping, Mapping):
         return {}
