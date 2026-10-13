@@ -13,7 +13,7 @@ import stat
 import tempfile
 import time
 import uuid
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,16 +27,22 @@ from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import (
     CatalogPaths,
+    _CacheEligibility,
+    _catalog_metadata,
     _copy_source_failure,
     _database_contained,
+    _file_signature,
     _inspect_catalog,
+    _open_regular_file,
     _read_active_pointer,
     _read_only_uri,
     _read_pointer,
     _resolve_catalog_path,
     _safe_snapshot_id,
     _snapshot_contained,
+    _snapshot_directory,
     _structural_path_error,
+    _verification_reusable,
     _VerificationStatus,
     _verify_database,
 )
@@ -184,65 +190,43 @@ def _reuse_archive(
     source = paths.snapshots_dir / snapshot_id / filename
 
     def identity() -> tuple[Path, os.stat_result] | None:
-        root = _resolve_catalog_path(paths.snapshots_dir)
-        snapshot = _resolve_catalog_path(paths.snapshots_dir / snapshot_id)
+        snapshot = _snapshot_directory(paths, snapshot_id)
         resolved = _resolve_catalog_path(source)
-        if snapshot.parent != root or not resolved.is_relative_to(snapshot):
+        if snapshot is None or not resolved.is_relative_to(snapshot):
             return None
         metadata = resolved.stat()
         return (resolved, metadata) if stat.S_ISREG(metadata.st_mode) else None
 
-    try:
-        approved = identity()
-        if approved is None:
+    with ExitStack() as resources:
+        try:
+            approved = identity()
+            if approved is None:
+                return False
+            resolved, metadata = approved
+            if metadata.st_size != previous.byte_length:
+                return False
+            opened = resources.enter_context(
+                _open_regular_file(resolved, nofollow=True)
+            )
+        except OSError as exc:
+            if _structural_path_error(exc):
+                return False
+            if exc.errno in {errno.EACCES, errno.EPERM}:
+                try:
+                    if identity() is None:
+                        return False
+                except OSError as probe_error:
+                    if _structural_path_error(probe_error):
+                        return False
+                    exc.add_note(f"archive identity probe also failed: {probe_error}")
+            raise
+        if opened is None:
             return False
-        resolved, metadata = approved
-        if metadata.st_size != previous.byte_length:
-            return False
-        descriptor = os.open(
-            resolved,
-            os.O_RDONLY
-            | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0),
-        )
-    except OSError as exc:
-        if _structural_path_error(exc):
-            return False
-        if exc.errno in {errno.EACCES, errno.EPERM}:
-            # Some platforms refuse to open directories instead of returning
-            # a descriptor. Require fresh structural evidence before fallback.
-            try:
-                if identity() is None:
-                    return False
-            except OSError as probe_error:
-                if _structural_path_error(probe_error):
-                    return False
-        raise
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            os.close(descriptor)
-            return False
-        handle = os.fdopen(descriptor, "rb")
-    except BaseException:
-        with suppress(OSError):
-            os.close(descriptor)
-        raise
-    with handle:
+        handle, descriptor_metadata = opened
 
         def same_file(candidate: os.stat_result) -> bool:
-            # Inodes can be reused immediately after unlinking. Include file
-            # metadata to reject replacement or mutation before reading bytes.
-            return stat.S_ISREG(candidate.st_mode) and all(
-                getattr(candidate, name) == getattr(opened, name)
-                for name in (
-                    "st_dev",
-                    "st_ino",
-                    "st_size",
-                    "st_mtime_ns",
-                    "st_ctime_ns",
-                )
+            return stat.S_ISREG(candidate.st_mode) and (
+                _file_signature(candidate) == _file_signature(descriptor_metadata)
             )
 
         try:
@@ -268,16 +252,14 @@ def _reuse_archive(
         return length == previous.byte_length and digest.hexdigest() == previous.sha256
 
 
-def _skipped_cache_reason(verification: _DatabaseVerification) -> str:
-    if verification.status is _VerificationStatus.INCOMPATIBLE:
-        return "previous catalog has an unsupported database schema"
-    if verification.status is _VerificationStatus.MISSING:
-        return "previous catalog database is missing"
-    return "previous catalog is unreadable"
-
-
-def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | None:
+def _copy_crosswalk(
+    connection: sqlite3.Connection,
+    previous: Path,
+    *,
+    eligibility: _CacheEligibility | None = None,
+) -> str | None:
     """Copy cached mappings, recovering only from a confirmed unreadable source."""
+    eligibility = eligibility or _CacheEligibility()
     retried = False
     while True:
         attached = False
@@ -286,6 +268,12 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | Non
                 "ATTACH DATABASE ? AS previous", (_read_only_uri(previous),)
             )
             attached = True
+            connection.execute("BEGIN")
+            metadata = _catalog_metadata(connection, attached=True)
+            if reason := eligibility.reason(metadata):
+                connection.rollback()
+                connection.execute("DETACH DATABASE previous")
+                return reason
             connection.execute(
                 "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
             )
@@ -295,7 +283,7 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | Non
                 connection.rollback()
                 if attached:
                     connection.execute("DETACH DATABASE previous")
-            except sqlite3.Error:
+            except BaseException:  # noqa: BLE001 - cleanup must preserve the original failure, including during cancellation
                 raise exc from None
             code = getattr(exc, "sqlite_errorcode", 0)
             if not _copy_source_failure(exc):
@@ -309,13 +297,15 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | Non
                 if verification.status is _VerificationStatus.RECOVERY_REQUIRED:
                     verification = _verify_database(previous, recover_hot_journal=True)
                 if verification.status is _VerificationStatus.HEALTHY:
+                    if reason := eligibility.reason(verification):
+                        return reason
                     continue
             if verification.status in {
                 _VerificationStatus.CORRUPT,
                 _VerificationStatus.MISSING,
                 _VerificationStatus.INCOMPATIBLE,
             }:
-                return _skipped_cache_reason(verification)
+                return eligibility.reason(verification)
             if (
                 verification.error is not None
                 and verification.status is _VerificationStatus.OPERATIONAL_FAILURE
@@ -325,13 +315,20 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | Non
         return None
 
 
-def _carry_crosswalk(previous: Path | None, candidate: Path) -> str | None:
+def _carry_crosswalk(
+    previous: Path | None,
+    candidate: Path,
+    *,
+    eligibility: _CacheEligibility | None = None,
+) -> str | None:
     connection = None
     failed = False
     try:
         connection = sqlite3.connect(candidate, uri=True)
         skipped_cache = (
-            _copy_crosswalk(connection, previous) if previous is not None else None
+            _copy_crosswalk(connection, previous, eligibility=eligibility)
+            if previous is not None
+            else None
         )
         connection.execute(
             "DELETE FROM api_crosswalk_cache WHERE entity_kind='part' "
@@ -491,7 +488,7 @@ def _promote_snapshot(
     pointer: _ActivePointer,
     source_verification: _DatabaseVerification | None,
     retain: int,
-    cache_skip_reason: str | None = None,
+    eligibility: _CacheEligibility,
 ) -> str | None:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
@@ -512,8 +509,8 @@ def _promote_snapshot(
             )
         )
         previous = None
-        skipped_cache = cache_skip_reason
-        if pointer.activation_id is not None and skipped_cache is None:
+        skipped_cache = None
+        if pointer.activation_id is not None:
             try:
                 safe = _database_contained(paths, pointer.activation_id)
             except OSError as exc:
@@ -524,24 +521,32 @@ def _promote_snapshot(
                 safe = False
             if safe:
                 source = paths.database_for(pointer.activation_id)
-                verification = source_verification or _verify_database(source)
+                verification = (
+                    source_verification
+                    if source_verification is not None
+                    and _verification_reusable(source_verification, source)
+                    else _verify_database(source)
+                )
                 if verification.status is _VerificationStatus.OPERATIONAL_FAILURE:
                     raise CatalogImportError(
                         f"unable to verify mapping source: {verification.error}"
                     ) from verification.error
-                if verification.status in {
+                skipped_cache = eligibility.reason(verification)
+                if skipped_cache is None and verification.status in {
                     _VerificationStatus.HEALTHY,
                     _VerificationStatus.RECOVERY_REQUIRED,
                 }:
                     previous = source
-                else:
-                    skipped_cache = _skipped_cache_reason(verification)
             else:
                 skipped_cache = (
                     "previous catalog source is unsafe or structurally unavailable"
                 )
         skipped_cache = (
-            _carry_crosswalk(previous, staging / paths.configured_database.name)
+            _carry_crosswalk(
+                previous,
+                staging / paths.configured_database.name,
+                eligibility=eligibility,
+            )
             or skipped_cache
         )
         _atomic_json(staging / _ACTIVATION_MARKER, {"generation": generation})
@@ -775,9 +780,9 @@ async def _refresh_attempt(
             )
             inspection = await _inspect_catalog(config, pointer, verification=reusable)
             current_state = inspection.state
-            if current_state.status is CatalogStatus.READY and (
-                prior_state.status is not CatalogStatus.READY
-                or current_state.snapshot_id != prior_state.snapshot_id
+            if (
+                current_state.status is CatalogStatus.READY
+                and inspection.verification is None
             ):
                 inspection = await _inspect_catalog(config, pointer, verify=True)
                 current_state = inspection.state
@@ -794,7 +799,7 @@ async def _refresh_attempt(
                 pointer=pointer,
                 source_verification=inspection.verification,
                 retain=config.snapshot_retention,
-                cache_skip_reason=inspection.cache_skip_reason,
+                eligibility=inspection.cache_eligibility,
             )
         finally:
             lock.release()

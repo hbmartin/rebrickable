@@ -36,7 +36,8 @@ Usage errors retain status `2`, even when their diagnostics cannot be delivered.
 Other errors writing or flushing command output, such as a full disk or an
 encoding failure, return
 `1` regardless of the selected command status. Help and version retain their
-parser status `0` when output fails. Encoding failures preserve and flush
+parser status `0` when output fails; operational failures are reported when
+stderr is usable. Encoding failures preserve and flush
 previously encoded output. Embedded calls to `cli.main()` never close or
 redirect any host stream, including the original stdout/stderr. The installed
 executable and `python -m rebrickable.cli` handle shutdown cleanup for failed
@@ -50,7 +51,8 @@ preserve the command status even with aliased stdout/stderr. Shared streams
 flush pending stdout before writing diagnostics, so a failed command-output
 flush cannot be mistaken for a diagnostic-only failure. Once that flush
 succeeds, later diagnostic failures preserve the status. Shared streams are
-finalized once, and each distinct operational stdout failure is reported once
+finalized after their last diagnostic, including messages produced by the
+final stdout flush. Each distinct operational stdout failure is reported once
 with its write or flush context. A flush failure after an encoding error has
 its own diagnostic when stderr remains usable.
 

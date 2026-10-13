@@ -248,7 +248,7 @@ def test_verified_recovery_requirement_permits_one_repair(
     error = sqlite3.OperationalError("source copy failed")
     error.sqlite_errorcode = code
     connection = Mock(spec=sqlite3.Connection)
-    connection.execute.side_effect = [error, None, None]
+    connection.execute.side_effect = [error, None, None, None, None]
     verify = Mock(
         side_effect=[
             database._DatabaseVerification(
@@ -258,6 +258,15 @@ def test_verified_recovery_requirement_permits_one_repair(
         ]
     )
     monkeypatch.setattr(module, "_verify_database", verify)
+    monkeypatch.setattr(
+        module,
+        "_catalog_metadata",
+        Mock(
+            return_value=database._DatabaseVerification(
+                status=database._VerificationStatus.HEALTHY
+            )
+        ),
+    )
     source = CatalogPaths.from_config(catalog_config).database_for("fixture-snapshot")
     assert not module._copy_crosswalk(connection, source)
     assert verify.call_args_list[1].kwargs == {"recover_hot_journal": True}
@@ -358,8 +367,9 @@ async def test_manifest_damage_does_not_hide_operational_database_failure(
             )
         ),
     )
+    monkeypatch.setattr(database, "_verify_database", module._verify_database)
     with pytest.raises(
-        CatalogImportError, match="unable to verify mapping source"
+        CatalogImportError, match="unable to verify previous catalog"
     ) as raised:
         await module.refresh_catalog(catalog_config)
     assert raised.value.__cause__ is error

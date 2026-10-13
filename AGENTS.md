@@ -192,11 +192,14 @@ update client models, wrappers, docs, and tests as needed. Do not use
   only executable entry points may neutralize failed original standard streams.
   Keep diagnostic encoding suppression separate from stdout suppression when
   roles share a stream. Track physical stream failure separately from its role:
-  diagnostic-only failures preserve status, shared streams finalize once, and
-  pending stdout flushes before diagnostics on aliased streams so buffered
+  diagnostic-only failures preserve status, shared streams finalize after their
+  last diagnostic, and pending stdout flushes before diagnostics on aliased
+  streams so buffered
   output failures retain stdout attribution. Operational stdout errors are
   reported once per distinct failure, with write/flush context; a later flush
-  error must not be hidden by an earlier encoding diagnostic. Global `--format` appears before the subcommand; legacy
+  error must not be hidden by an earlier encoding diagnostic. Operational parser
+  output failures are diagnosed without changing SystemExit codes. Global
+  `--format` appears before the subcommand; legacy
   local JSON/CSV flags remain compatibility surfaces.
 - `src/rebrickable/config.py` and `src/rebrickable/dirs.py` own configuration
   loading, secret persistence rules, and platform-specific paths.
@@ -238,11 +241,17 @@ update client models, wrappers, docs, and tests as needed. Do not use
   a safely contained, verified database mapping cache. Preserve every original
   exception when cleanup also fails.
   Preserve raw verification across metadata/state classification and reuse it
-  for an unchanged contained source. Identity disagreements still skip cache
-  copying; manifest-only schema disagreements may retain verified version-1
+  only for a contained source whose resolved path, device/inode, size, modification
+  and change times, and journal/WAL signatures still match. Capture signatures
+  before and after verification; reverify changed sources under the promotion
+  lock. Identity disagreements still skip cache copying even with other malformed manifest fields or after journal recovery.
+  Validate attached source metadata within the copy transaction before inserting
+  mappings. Manifest-only schema disagreements may retain verified version-1
   mappings. Unsupported database versions are distinct from corruption and
-  must not be checked against the version-1 allowlist. Unavailable SQLite
-  modules/functions/collations and unknown schema-probe errors are operational;
+  report SCHEMA_MISMATCH/CatalogSchemaError and must not be checked against
+  version-1 identity requirements or the version-1 allowlist. Validate stored
+  metadata UTF-8 explicitly; positively identified view-definition defects are
+  structural. Unavailable SQLite modules/functions/collations and unknown schema-probe errors are operational;
   only positively identified structural errors justify skipping the cache.
   Permissions, resource exhaustion, contention, ambiguous I/O, and candidate
   storage failures must abort refresh rather than discard cached mappings.
@@ -256,6 +265,11 @@ update client models, wrappers, docs, and tests as needed. Do not use
   activation provenance when containment fails; it never authorizes unsafe
   access. Reject obstructed pointer destinations before downloads and recheck
   them under the promotion lock before candidate installation.
+  Pointer and archive readers share regular-file opening and ownership rules.
+  Relinquish ownership before close and never retry a potentially recycled
+  descriptor. Preserve secondary probe errors in exception context or notes;
+  opening denial alone does not prove structural damage. Deep pointer JSON
+  is invalid and must release its descriptor.
   Pointer reads use a single regular-file descriptor and nonblocking opens
   where supported. Check descriptors before wrapping cached-file streams.
   Parent traversal must stop at the root, and the final destination check

@@ -166,3 +166,53 @@ def test_suppressed_write_failure_is_not_labeled_flush(monkeypatch) -> None:
     assert cli.main(["url", "part", "3001"]) == 1
     assert stderr.getvalue() == "unable to write stdout: [Errno 28] write full\n"
     stream.flush.assert_not_called()
+
+
+@pytest.mark.parametrize("status", range(6))
+def test_aliased_final_diagnostic_reaches_raw_stream(monkeypatch, status) -> None:
+    raw = RecordingRaw(None)
+    stream = io.TextIOWrapper(io.BufferedWriter(raw), encoding="ascii")
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stream))
+
+    async def run(_args) -> int:
+        cli._write_stdout("buffered result", status=status)
+        with suppress(OSError):
+            cli._write_stdout("\N{SNOWMAN}", status=status)
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    try:
+        for _ in range(2):
+            assert cli.main(["url", "part", "3001"]) == 1
+        assert raw.data.count(b"buffered result") == 2
+        assert raw.data.count(b"unable to write stdout:") == 2
+        assert not stream.closed
+        stream.write("host still works")
+        stream.flush()
+        assert raw.data.endswith(b"host still works")
+    finally:
+        stream.close()
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["--version"], ["not-a-command"]])
+def test_parser_output_failure_reports_once_without_changing_exit(
+    monkeypatch, arguments
+) -> None:
+    raw = RecordingRaw(OSError(errno.ENOSPC, "parser output full"))
+    stream = io.TextIOWrapper(io.BufferedWriter(raw), encoding="ascii")
+    stderr = io.StringIO()
+    monkeypatch.setattr("sys.stdout", stream)
+    monkeypatch.setattr("sys.stderr", stderr)
+    if arguments == ["not-a-command"]:
+        # Usage errors are written to stderr and retain status 2 if it fails.
+        monkeypatch.setattr(cli.sys, "stderr", stream)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            cli.main(arguments)
+        assert raised.value.code == (2 if arguments == ["not-a-command"] else 0)
+        if arguments != ["not-a-command"]:
+            assert stderr.getvalue().count("unable to flush stdout:") == 1
+        assert not stream.closed
+    finally:
+        raw.error = None
+        stream.close()

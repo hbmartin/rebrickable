@@ -359,8 +359,10 @@ installed CLI or module execution for standalone scripts.
 Diagnostic-only failures retain that status with aliased streams too. Shared
 streams flush pending stdout before diagnostics, preserving attribution when
 the diagnostic write would otherwise flush buffered command output. Subsequent
-diagnostic-only failures retain the status. Shared streams are finalized once,
-and operational stdout errors are reported once.
+diagnostic-only failures retain the status. Shared streams are finalized after
+their final diagnostic, and operational stdout errors are reported once.
+Operational parser-output failures are diagnosed without changing parser exit
+codes.
 Distinct write and flush failures receive separate diagnostics when stderr
 remains usable; an encoding error does not hide a later buffered flush failure.
 
@@ -394,7 +396,14 @@ installation; uncertain activation failures still preserve possible candidates.
 Raw database verification survives manifest/state classification. Cache-copy
 policy remains unchanged: identity disagreements skip copying, manifest-only
 schema disagreements may preserve verified version-1 mappings, and unsupported
-database schemas skip copying with an accurate reason. Missing SQLite modules,
+database schemas skip copying with an accurate reason. Verified unsupported
+versions now report `SCHEMA_MISMATCH` and raise the existing `CatalogSchemaError`
+on opening. Version-1 identity requirements are not applied to unsupported
+versions. Manifest identity checks survive other invalid fields and are repeated
+on the attached source after journal recovery. Reuse of healthy verification is
+bound to stable database identity/change metadata and journal/WAL sidecars; a
+changed source is reverified under the promotion lock. Invalid stored UTF-8 and
+definite required-view defects count as structural damage. Missing SQLite modules,
 functions, collations and unclassified schema-probe errors remain operational
 failures; positively identified structural defects permit replacement.
 
@@ -407,6 +416,10 @@ Length mismatches fail reuse before copying, and nonblocking opens on supported
 platforms prevent a regular-file-to-FIFO swap from trapping a refresh worker.
 The opened descriptor is checked before constructing a stream, so directory
 swaps also reject reuse and trigger the existing single fresh download.
+Pointer and archive opens share descriptor ownership rules: cleanup never
+retries a close on a potentially recycled descriptor, and secondary operational
+probe failures remain available in exception notes. Deep pointer JSON is
+classified as invalid without leaking its descriptor.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.
