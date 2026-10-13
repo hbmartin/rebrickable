@@ -99,6 +99,10 @@ asyncio.run(main())
 - **Atomic, verified refresh.** Two-phase promotion flips a single active
   pointer only after schema, cross-file reference, FTS, row-count, and SQLite
   integrity checks pass. A failed refresh leaves the previous snapshot active.
+  Verification distinguishes structural damage from unavailable SQLite features
+  and unsupported schemas. Existing cache-copy rules remain unchanged; see the
+  [refresh guidance](https://hbmartin.github.io/rebrickable/quickstart/) for metadata disagreements and safe
+  cached-file reuse.
 - **Typed API v3 client.** 63 operations from the vendored OpenAPI document,
   covering parts, sets, minifigs, themes, colors, and user collections, with
   typed errors, pagination helpers, and header-only authentication.
@@ -131,7 +135,8 @@ Failed diagnostics preserve the command status even when stderr shares stdout.
 Pending stdout is flushed before diagnostics on a shared stream. A failure
 flushing that output follows the stdout policy; failures confined to later
 diagnostics preserve the command status. Shared streams are finalized once,
-and operational stdout failures are reported once.
+and each distinct operational stdout failure is reported once with its write
+or flush context, including a flush failure after an encoding error.
 
 Embedded `cli.main()` calls return a status and leave host streams open without
 redirecting descriptors. The host owns shutdown cleanup for failed borrowed

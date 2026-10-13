@@ -23,6 +23,45 @@ from rebrickable.errors import DownloadError
 from tests.test_refresh_recovery import stable_sources
 
 
+@pytest.mark.parametrize("probe_error", [errno.ENOENT, errno.EACCES])
+def test_denied_archive_open_probes_without_hiding_operational_errors(
+    catalog_config, tmp_path, monkeypatch, probe_error
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    source = paths.snapshots_dir / "fixture-snapshot" / "parts.csv.gz"
+    previous = next(
+        item
+        for item in asyncio.run(catalog_state(catalog_config)).files
+        if item.dataset == "parts"
+    )
+    error = PermissionError(errno.EACCES, "open denied")
+    original_stat = Path.stat
+    denied = False
+
+    def open_source(_path, _flags) -> int:
+        nonlocal denied
+        denied = True
+        raise error
+
+    def stat_source(path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if denied and path == source:
+            raise OSError(probe_error, "probe failed")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", open_source)
+    monkeypatch.setattr(Path, "stat", stat_source)
+    if probe_error == errno.ENOENT:
+        assert not module._reuse_archive(
+            paths, "fixture-snapshot", source.name, tmp_path / "saved", previous
+        )
+    else:
+        with pytest.raises(PermissionError) as raised:
+            module._reuse_archive(
+                paths, "fixture-snapshot", source.name, tmp_path / "saved", previous
+            )
+        assert raised.value is error
+
+
 @pytest.fixture(autouse=True)
 def conditional_archives(catalog_config) -> None:
     manifest = CatalogPaths.from_config(catalog_config).manifest_for("fixture-snapshot")
@@ -48,7 +87,17 @@ class ArchiveStream(httpx2.AsyncByteStream):
 
 @pytest.mark.parametrize(
     "damage",
-    ["none", "missing", "directory", "outside", "contained", "mismatch", "loop"],
+    [
+        "none",
+        "missing",
+        "directory",
+        "directory-swap",
+        "directory-denied",
+        "outside",
+        "contained",
+        "mismatch",
+        "loop",
+    ],
 )
 async def test_streaming_304_safe_reuse_or_one_fresh_download(
     catalog_config, tmp_path, monkeypatch, damage
@@ -73,6 +122,18 @@ async def test_streaming_304_safe_reuse_or_one_fresh_download(
         cached.symlink_to(cached.name)
     elif damage == "mismatch":
         cached.write_bytes(b"different archive bytes")
+    elif damage in {"directory-swap", "directory-denied"}:
+        original_open = os.open
+
+        def swap(path, flags, *args: Any, **kwargs: Any) -> int:
+            if path == cached:
+                cached.unlink()
+                cached.mkdir()
+                if damage == "directory-denied":
+                    raise PermissionError(errno.EACCES, "directory open denied")
+            return original_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(module.os, "open", swap)
     requests = []
     streams = []
 
@@ -201,7 +262,7 @@ def test_check_open_race_never_reads_swapped_file(
     assert replacement.read_bytes() == b"outside"
 
 
-@pytest.mark.parametrize("where", ["source", "destination"])
+@pytest.mark.parametrize("where", ["source", "permission", "destination"])
 async def test_operational_reuse_errors_do_not_redownload(
     catalog_config, monkeypatch, where
 ) -> None:
@@ -209,9 +270,14 @@ async def test_operational_reuse_errors_do_not_redownload(
     original_pointer = paths.active_pointer.read_bytes()
     original_open = Path.open
     error = OSError(
-        errno.EMFILE if where == "source" else errno.ENOSPC, "reuse operational failure"
+        {
+            "source": errno.EMFILE,
+            "permission": errno.EACCES,
+            "destination": errno.ENOSPC,
+        }[where],
+        "reuse operational failure",
     )
-    if where == "source":
+    if where != "destination":
         original_descriptor_open = os.open
 
         def open_source(path, *args: Any, **kwargs: Any) -> int:

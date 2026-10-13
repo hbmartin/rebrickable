@@ -74,6 +74,16 @@ renamed with its pointer updated without rewriting matching logical identities.
 Manifest damage does not by itself discard a safely contained, verified mapping
 cache. An obstructed active-pointer destination fails before downloads, and
 promotion checks it again before installing the candidate.
+Pointer reads use one regular-file descriptor, with nonblocking opening where
+supported, so a file-to-FIFO swap cannot block the reader. Pointer-parent checks
+stop at the filesystem root, and promotion rechecks the destination after
+carryover and staging movement, immediately before installation.
+Database verification is independent of manifest classification. An identity
+disagreement keeps ordinary access unavailable and skips cached mappings; a
+manifest-only schema disagreement may retain a separately verified version-1
+cache. An unsupported database schema skips copying with a specific diagnostic.
+Missing SQLite features, including modules, functions and collations, are
+operational errors rather than proof of catalog corruption.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed

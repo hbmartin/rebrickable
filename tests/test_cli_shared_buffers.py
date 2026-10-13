@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import errno
 import io
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import override
+from unittest.mock import Mock
 
 import pytest
 
@@ -119,3 +121,48 @@ def test_shared_encoding_suppression_and_records_are_invocation_local(
         assert not stream.closed
     finally:
         stream.close()
+
+
+@pytest.mark.parametrize("status", range(6))
+def test_distinct_write_and_flush_failures_are_each_reported(
+    monkeypatch, status
+) -> None:
+    raw = RecordingRaw(OSError(errno.ENOSPC, "buffer flush full"))
+    stream = io.TextIOWrapper(io.BufferedWriter(raw), encoding="ascii")
+    stderr = io.StringIO()
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stderr))
+
+    async def run(_args) -> int:
+        cli._write_stdout("buffered", status=status)
+        cli._write_stdout("\N{SNOWMAN}", status=status)
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    try:
+        assert cli.main(["url", "part", "3001"]) == 1
+        lines = stderr.getvalue().splitlines()
+        assert len(lines) == 2
+        assert lines[0].startswith("unable to write stdout: ")
+        assert "codec can't encode" in lines[0]
+        assert lines[1] == "unable to flush stdout: [Errno 28] buffer flush full"
+        assert not stream.closed
+    finally:
+        raw.error = None
+        stream.close()
+
+
+def test_suppressed_write_failure_is_not_labeled_flush(monkeypatch) -> None:
+    stream = Mock(spec=io.StringIO, closed=False)
+    stream.write.side_effect = OSError(errno.ENOSPC, "write full")
+    stderr = io.StringIO()
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stderr))
+
+    async def run(_args) -> int:
+        with suppress(OSError):
+            cli._write_stdout("result")
+        return 0
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == 1
+    assert stderr.getvalue() == "unable to write stdout: [Errno 28] write full\n"
+    stream.flush.assert_not_called()

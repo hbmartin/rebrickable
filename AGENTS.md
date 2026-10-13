@@ -195,7 +195,8 @@ update client models, wrappers, docs, and tests as needed. Do not use
   diagnostic-only failures preserve status, shared streams finalize once, and
   pending stdout flushes before diagnostics on aliased streams so buffered
   output failures retain stdout attribution. Operational stdout errors are
-  reported once. Global `--format` appears before the subcommand; legacy
+  reported once per distinct failure, with write/flush context; a later flush
+  error must not be hidden by an earlier encoding diagnostic. Global `--format` appears before the subcommand; legacy
   local JSON/CSV flags remain compatibility surfaces.
 - `src/rebrickable/config.py` and `src/rebrickable/dirs.py` own configuration
   loading, secret persistence rules, and platform-specific paths.
@@ -236,6 +237,13 @@ update client models, wrappers, docs, and tests as needed. Do not use
   manifests without an identity field. Manifest damage alone must not discard
   a safely contained, verified database mapping cache. Preserve every original
   exception when cleanup also fails.
+  Preserve raw verification across metadata/state classification and reuse it
+  for an unchanged contained source. Identity disagreements still skip cache
+  copying; manifest-only schema disagreements may retain verified version-1
+  mappings. Unsupported database versions are distinct from corruption and
+  must not be checked against the version-1 allowlist. Unavailable SQLite
+  modules/functions/collations and unknown schema-probe errors are operational;
+  only positively identified structural errors justify skipping the cache.
   Permissions, resource exhaustion, contention, ambiguous I/O, and candidate
   storage failures must abort refresh rather than discard cached mappings.
 - Reuse cached archives only through contained, stable regular-file handles and
@@ -248,6 +256,10 @@ update client models, wrappers, docs, and tests as needed. Do not use
   activation provenance when containment fails; it never authorizes unsafe
   access. Reject obstructed pointer destinations before downloads and recheck
   them under the promotion lock before candidate installation.
+  Pointer reads use a single regular-file descriptor and nonblocking opens
+  where supported. Check descriptors before wrapping cached-file streams.
+  Parent traversal must stop at the root, and the final destination check
+  follows carryover and staging movement, immediately before installation.
 - Resolve every active pointer through shared identifier and containment checks,
   including bridge writers. Reject traversal, Windows filename aliases/reserved
   names, and links escaping the snapshot boundary before database access.

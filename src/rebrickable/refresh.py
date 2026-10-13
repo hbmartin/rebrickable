@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -99,6 +100,8 @@ def _check_pointer_destination(paths: CatalogPaths) -> None:
                     raise NotADirectoryError(
                         f"pointer parent is a dangling link: {parent}"
                     ) from None
+                if parent.parent == parent:
+                    raise
                 parent = parent.parent
                 continue
             if not stat.S_ISDIR(metadata.st_mode):
@@ -206,15 +209,27 @@ def _reuse_archive(
     except OSError as exc:
         if _structural_path_error(exc):
             return False
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            # Some platforms refuse to open directories instead of returning
+            # a descriptor. Require fresh structural evidence before fallback.
+            try:
+                if identity() is None:
+                    return False
+            except OSError as probe_error:
+                if _structural_path_error(probe_error):
+                    return False
         raise
     try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            os.close(descriptor)
+            return False
         handle = os.fdopen(descriptor, "rb")
     except BaseException:
         with suppress(OSError):
             os.close(descriptor)
         raise
     with handle:
-        opened = os.fstat(handle.fileno())
 
         def same_file(candidate: os.stat_result) -> bool:
             # Inodes can be reused immediately after unlinking. Include file
@@ -253,7 +268,15 @@ def _reuse_archive(
         return length == previous.byte_length and digest.hexdigest() == previous.sha256
 
 
-def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
+def _skipped_cache_reason(verification: _DatabaseVerification) -> str:
+    if verification.status is _VerificationStatus.INCOMPATIBLE:
+        return "previous catalog has an unsupported database schema"
+    if verification.status is _VerificationStatus.MISSING:
+        return "previous catalog database is missing"
+    return "previous catalog is unreadable"
+
+
+def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> str | None:
     """Copy cached mappings, recovering only from a confirmed unreadable source."""
     retried = False
     while True:
@@ -290,23 +313,26 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
             if verification.status in {
                 _VerificationStatus.CORRUPT,
                 _VerificationStatus.MISSING,
+                _VerificationStatus.INCOMPATIBLE,
             }:
-                return True
+                return _skipped_cache_reason(verification)
             if (
                 verification.error is not None
                 and verification.status is _VerificationStatus.OPERATIONAL_FAILURE
             ):
                 raise verification.error from exc
             raise
-        return False
+        return None
 
 
-def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
+def _carry_crosswalk(previous: Path | None, candidate: Path) -> str | None:
     connection = None
     failed = False
     try:
         connection = sqlite3.connect(candidate, uri=True)
-        skipped_cache = previous is not None and _copy_crosswalk(connection, previous)
+        skipped_cache = (
+            _copy_crosswalk(connection, previous) if previous is not None else None
+        )
         connection.execute(
             "DELETE FROM api_crosswalk_cache WHERE entity_kind='part' "
             "AND canonical_id NOT IN (SELECT part_num FROM parts)"
@@ -465,7 +491,8 @@ def _promote_snapshot(
     pointer: _ActivePointer,
     source_verification: _DatabaseVerification | None,
     retain: int,
-) -> bool:
+    cache_skip_reason: str | None = None,
+) -> str | None:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
         _check_pointer_destination(paths)
@@ -485,8 +512,8 @@ def _promote_snapshot(
             )
         )
         previous = None
-        skipped_cache = False
-        if pointer.activation_id is not None:
+        skipped_cache = cache_skip_reason
+        if pointer.activation_id is not None and skipped_cache is None:
             try:
                 safe = _database_contained(paths, pointer.activation_id)
             except OSError as exc:
@@ -508,15 +535,18 @@ def _promote_snapshot(
                 }:
                     previous = source
                 else:
-                    skipped_cache = True
+                    skipped_cache = _skipped_cache_reason(verification)
             else:
-                skipped_cache = True
+                skipped_cache = (
+                    "previous catalog source is unsafe or structurally unavailable"
+                )
         skipped_cache = (
             _carry_crosswalk(previous, staging / paths.configured_database.name)
             or skipped_cache
         )
         _atomic_json(staging / _ACTIVATION_MARKER, {"generation": generation})
         shutil.move(staging, incoming)
+        _check_pointer_destination(paths)
         durable_replace(incoming, destination)
         _atomic_json(
             paths.active_pointer,
@@ -738,7 +768,7 @@ async def _refresh_attempt(
             pointer = _read_active_pointer(paths)
             reusable = (
                 prior_inspection.verification
-                if pointer.snapshot_id == prior_state.snapshot_id
+                if pointer.activation_id == prior_state.snapshot_id
                 and prior_inspection.verification is not None
                 and prior_inspection.verification.status is _VerificationStatus.HEALTHY
                 else None
@@ -764,6 +794,7 @@ async def _refresh_attempt(
                 pointer=pointer,
                 source_verification=inspection.verification,
                 retain=config.snapshot_retention,
+                cache_skip_reason=inspection.cache_skip_reason,
             )
         finally:
             lock.release()
@@ -772,7 +803,7 @@ async def _refresh_attempt(
                 callback,
                 ProgressEvent(
                     stage=ProgressStage.PROMOTE,
-                    message="previous catalog became unreadable; skipped cached API mappings",
+                    message=f"{skipped_cache}; skipped cached API mappings",
                 ),
             )
         report = RefreshReport(
