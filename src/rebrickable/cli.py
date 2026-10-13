@@ -823,7 +823,6 @@ def _main(argv: list[str] | None, *, owned: tuple[tuple[IO[str], int], ...]) -> 
                             f"unable to {failure.operation} stdout: {failure.error}"
                         )
             _flush_stream(sys.stderr, role="stderr")
-            _flush_stream(sys.stdout, role="stdout")
         finally:
             _output_state.reset(token)
     if parser_exit is not None:

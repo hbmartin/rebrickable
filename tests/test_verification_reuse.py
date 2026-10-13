@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -392,3 +393,173 @@ def test_copy_cleanup_keeps_original_sqlite_failure(
         module._copy_crosswalk(connection, source)
     assert raised.value is original
     verifier.assert_not_called()
+
+
+@pytest.mark.parametrize("status", list(database._VerificationStatus))
+@pytest.mark.parametrize("allow_negative", [False, True])
+def test_verification_reuse_requires_eligible_signed_result(
+    catalog_config, status, allow_negative
+) -> None:
+    source = database.CatalogPaths.from_config(catalog_config).database_for(
+        "fixture-snapshot"
+    )
+    verification = replace(database._verify_database(source), status=status)
+    expected = status is database._VerificationStatus.HEALTHY or (
+        allow_negative
+        and status
+        in {
+            database._VerificationStatus.CORRUPT,
+            database._VerificationStatus.INCOMPATIBLE,
+        }
+    )
+    assert (
+        database._verification_reusable(
+            verification, source, allow_stable_negative=allow_negative
+        )
+        is expected
+    )
+    assert not database._verification_reusable(
+        replace(verification, signature=None),
+        source,
+        allow_stable_negative=allow_negative,
+    )
+    assert not database._verification_reusable(
+        None, source, allow_stable_negative=allow_negative
+    )
+    metadata = source.stat()
+    os.utime(source, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000))
+    assert not database._verification_reusable(
+        verification, source, allow_stable_negative=allow_negative
+    )
+
+
+@pytest.mark.parametrize("damage", ["unsupported", "missing-table"])
+async def test_stable_negative_verification_is_reused_only_within_promotion_lock(
+    catalog_config, monkeypatch, damage
+) -> None:
+    paths = database.CatalogPaths.from_config(catalog_config)
+    source = paths.database_for("fixture-snapshot")
+    sources = stable_sources(catalog_config)
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute(
+            "UPDATE snapshot_meta SET value='2' WHERE key='schema_version'"
+            if damage == "unsupported"
+            else "DROP TABLE api_crosswalk_cache"
+        )
+        connection.commit()
+    verifier = Mock(wraps=database._verify_database)
+    monkeypatch.setattr(database, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_download_one", downloader(sources))
+    events = []
+    report = await module.refresh_catalog(catalog_config, callback=events.append)
+    assert verifier.call_count == 2  # Initial check and a fresh check under the lock.
+    with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM api_crosswalk_cache"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM user_mapping_overrides"
+        ).fetchone() == (2,)
+    reason = "unsupported database schema" if damage == "unsupported" else "unreadable"
+    assert any(reason in event.message for event in events)
+
+
+async def test_repaired_negative_source_is_reverified_before_promotion(
+    catalog_config, monkeypatch
+) -> None:
+    paths = database.CatalogPaths.from_config(catalog_config)
+    source = paths.database_for("fixture-snapshot")
+    sources = stable_sources(catalog_config)
+    seed_mapping(catalog_config)
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute(
+            "UPDATE snapshot_meta SET value='2' WHERE key='schema_version'"
+        )
+        connection.commit()
+    original_inspect = module._inspect_catalog
+    negative_checks = 0
+
+    async def inspect(
+        config, pointer, *, verify=False, verification=None
+    ) -> database._CatalogInspection:
+        nonlocal negative_checks
+        result = await original_inspect(
+            config, pointer, verify=verify, verification=verification
+        )
+        if (
+            result.verification is not None
+            and result.verification.status is database._VerificationStatus.INCOMPATIBLE
+        ):
+            negative_checks += 1
+            if negative_checks == 2:
+                with closing(sqlite3.connect(source)) as connection:
+                    connection.execute(
+                        "UPDATE snapshot_meta SET value='1' WHERE key='schema_version'"
+                    )
+                    connection.commit()
+                metadata = source.stat()
+                os.utime(
+                    source, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000)
+                )
+        return result
+
+    verifier = Mock(wraps=database._verify_database)
+    monkeypatch.setattr(database, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_inspect_catalog", inspect)
+    monkeypatch.setattr(module, "_download_one", downloader(sources))
+    report = await module.refresh_catalog(catalog_config)
+    assert verifier.call_count == 3
+    with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM api_crosswalk_cache"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("change", ["identity", "schema"])
+async def test_coarse_timestamps_cannot_bypass_transactional_metadata_checks(
+    catalog_config, monkeypatch, change
+) -> None:
+    paths = database.CatalogPaths.from_config(catalog_config)
+    source = paths.database_for("fixture-snapshot")
+    sources = stable_sources(catalog_config)
+    seed_mapping(catalog_config)
+    original_inspect = module._inspect_catalog
+
+    def coarse_signature(metadata) -> database._FileSignature:
+        # Model equal timestamps for writes falling within one filesystem tick.
+        return metadata.st_dev, metadata.st_ino, metadata.st_size, 0, 0
+
+    async def inspect(
+        config, pointer, *, verify=False, verification=None
+    ) -> database._CatalogInspection:
+        if not verify:
+            with closing(sqlite3.connect(source)) as connection:
+                connection.execute(
+                    "UPDATE snapshot_meta SET value='other' WHERE key='snapshot_id'"
+                    if change == "identity"
+                    else "UPDATE snapshot_meta SET value='2' WHERE key='schema_version'"
+                )
+                connection.commit()
+        return await original_inspect(
+            config, pointer, verify=verify, verification=verification
+        )
+
+    verifier = Mock(wraps=database._verify_database)
+    monkeypatch.setattr(database, "_file_signature", coarse_signature)
+    monkeypatch.setattr(database, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_verify_database", verifier)
+    monkeypatch.setattr(module, "_inspect_catalog", inspect)
+    monkeypatch.setattr(module, "_download_one", downloader(sources))
+    events = []
+    report = await module.refresh_catalog(catalog_config, callback=events.append)
+    assert verifier.call_count == 1
+    with closing(sqlite3.connect(paths.database_for(report.snapshot_id))) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM api_crosswalk_cache"
+        ).fetchone() == (0,)
+    reason = (
+        "identity disagrees" if change == "identity" else "unsupported database schema"
+    )
+    assert any(reason in event.message for event in events)

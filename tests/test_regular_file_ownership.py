@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import io
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Never
 from unittest.mock import Mock
@@ -13,12 +15,16 @@ from rebrickable import refresh as module
 from rebrickable.catalog import database
 
 
-def test_nonregular_close_does_not_close_recycled_descriptor(
-    catalog_config, monkeypatch, tmp_path
+@pytest.mark.parametrize("regular", [False, True])
+def test_owned_close_does_not_close_recycled_descriptor(
+    catalog_config, monkeypatch, tmp_path, regular
 ) -> None:
     paths = database.CatalogPaths.from_config(catalog_config)
-    read_fd, write_fd = os.pipe()
-    os.close(write_fd)
+    if regular:
+        read_fd = os.open(paths.active_pointer, os.O_RDONLY)
+    else:
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
     original_close = os.close
     original_open = os.open
     original_fstat = os.fstat
@@ -37,13 +43,78 @@ def test_nonregular_close_does_not_close_recycled_descriptor(
     try:
         with pytest.raises(OSError, match="after releasing"):
             with database._open_regular_file(tmp_path / "swapped") as opened:
-                assert opened is None
+                assert (opened is not None) is regular
         assert closes == [read_fd]
         assert recycled == [read_fd]
         assert original_fstat(recycled[0])
     finally:
         for descriptor in recycled:
             original_close(descriptor)
+
+
+@pytest.mark.parametrize("after_raw", [False, True])
+def test_failed_stream_construction_keeps_descriptor_ownership(
+    catalog_config, monkeypatch, tmp_path, after_raw
+) -> None:
+    path = database.CatalogPaths.from_config(catalog_config).active_pointer
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"unrelated file")
+    original_close = os.close
+    original_open = os.open
+    closes = Mock(wraps=original_close)
+    owned = []
+    other = []
+    failure = MemoryError("stream construction failed")
+
+    def fdopen(descriptor, mode, *, buffering=-1, closefd=True) -> Never:
+        del buffering
+        owned.append(descriptor)
+        if after_raw:
+            raw = io.FileIO(descriptor, mode, closefd=closefd)
+            raw.close()  # Model io.open cleaning up after buffer construction fails.
+        other.append(original_open(unrelated, os.O_RDONLY))
+        raise failure
+
+    monkeypatch.setattr(database.os, "fdopen", fdopen)
+    monkeypatch.setattr(database.os, "close", closes)
+    try:
+        with pytest.raises(MemoryError) as raised:
+            with database._open_regular_file(path):
+                pytest.fail("failed construction must not enter the context")
+        assert raised.value is failure
+        closes.assert_called_once_with(owned[0])
+        with pytest.raises(OSError):
+            os.fstat(owned[0])
+        assert os.fstat(other[0]).st_size == len(b"unrelated file")
+    finally:
+        for descriptor in other:
+            with suppress(OSError):
+                original_close(descriptor)
+
+
+@pytest.mark.parametrize("nofollow", [False, True])
+@pytest.mark.parametrize("available", [False, True])
+def test_open_failure_probe_respects_nofollow(
+    catalog_config, monkeypatch, nofollow, available
+) -> None:
+    path = database.CatalogPaths.from_config(catalog_config).active_pointer
+    target = path.with_name("pointer-target.json")
+    path.rename(target)
+    try:
+        path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    error = PermissionError(errno.EACCES, "opening denied")
+    monkeypatch.setattr(database.os, "O_NOFOLLOW", 1 if available else 0, raising=False)
+    monkeypatch.setattr(database.os, "open", Mock(side_effect=error))
+    if nofollow and available:
+        with database._open_regular_file(path, nofollow=True) as opened:
+            assert opened is None
+    else:
+        with pytest.raises(PermissionError) as raised:
+            with database._open_regular_file(path):
+                pytest.fail("a regular target's access denial must propagate")
+        assert raised.value is error
 
 
 @pytest.mark.parametrize("initial_failure", [False, True])
