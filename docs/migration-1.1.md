@@ -361,6 +361,8 @@ streams flush pending stdout before diagnostics, preserving attribution when
 the diagnostic write would otherwise flush buffered command output. Subsequent
 diagnostic-only failures retain the status. Shared streams are finalized once,
 and operational stdout errors are reported once.
+Distinct write and flush failures receive separate diagnostics when stderr
+remains usable; an encoding error does not hide a later buffered flush failure.
 
 Private activation history now determines snapshot retention. Existing pointers
 and version-1 databases/manifests remain readable. Uncertain legacy directories
@@ -385,6 +387,16 @@ pointer to the directory name. Legacy manifests without an identity field
 remain supported. Manifest damage alone does not discard a healthy mapping
 cache. Known activation-path obstructions fail before downloads and are checked
 again under the promotion lock before installing the replacement.
+Pointer reads now use a single regular-file descriptor and nonblocking opens
+where supported. Parent traversal terminates at the root. The final activation
+path check runs after carryover and staging movement, immediately before
+installation; uncertain activation failures still preserve possible candidates.
+Raw database verification survives manifest/state classification. Cache-copy
+policy remains unchanged: identity disagreements skip copying, manifest-only
+schema disagreements may preserve verified version-1 mappings, and unsupported
+database schemas skip copying with an accurate reason. Missing SQLite modules,
+functions, collations and unclassified schema-probe errors remain operational
+failures; positively identified structural defects permit replacement.
 
 Cached `304` archives now require contained regular-file identity and matching
 recorded length/SHA256. Unsafe, missing or changed files trigger one
@@ -393,6 +405,8 @@ failures abort refresh instead. Archive bytes remain raw, with normal header
 and import validation.
 Length mismatches fail reuse before copying, and nonblocking opens on supported
 platforms prevent a regular-file-to-FIFO swap from trapping a refresh worker.
+The opened descriptor is checked before constructing a stream, so directory
+swaps also reject reuse and trigger the existing single fresh download.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.

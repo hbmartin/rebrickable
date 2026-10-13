@@ -50,7 +50,9 @@ preserve the command status even with aliased stdout/stderr. Shared streams
 flush pending stdout before writing diagnostics, so a failed command-output
 flush cannot be mistaken for a diagnostic-only failure. Once that flush
 succeeds, later diagnostic failures preserve the status. Shared streams are
-finalized once, and each operational stdout failure is reported once.
+finalized once, and each distinct operational stdout failure is reported once
+with its write or flush context. A flush failure after an encoding error has
+its own diagnostic when stderr remains usable.
 
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
 part-count, category, material, limit, and offset filters. `catalog doctor`

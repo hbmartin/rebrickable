@@ -93,6 +93,7 @@ async def test_operational_access_failure_preserves_active_catalog(
         else paths.manifest_for("fixture-snapshot")
     )
     original_read = Path.read_text
+    original_open = os.open
     original_stat = Path.stat
 
     def read(path, *args: Any, **kwargs: Any) -> str:
@@ -105,7 +106,14 @@ async def test_operational_access_failure_preserves_active_catalog(
             raise error
         return original_stat(path, *args, **kwargs)
 
-    if where in {"pointer", "manifest"}:
+    def open_pointer(path, *args: Any, **kwargs: Any) -> int:
+        if path == target:
+            raise error
+        return original_open(path, *args, **kwargs)
+
+    if where == "pointer":
+        monkeypatch.setattr(database.os, "open", open_pointer)
+    elif where == "manifest":
         monkeypatch.setattr(Path, "read_text", read)
     elif where == "stat":
         monkeypatch.setattr(Path, "stat", stat)

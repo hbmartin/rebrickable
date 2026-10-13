@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import sqlite3
 import stat
 from contextlib import suppress
@@ -131,27 +132,47 @@ def _safe_snapshot_id(value: object) -> bool:
     )
 
 
-def _database_contained(paths: CatalogPaths, snapshot_id: str) -> bool:
+def _contained_snapshot(paths: CatalogPaths, snapshot_id: str) -> Path | None:
     root = _resolve_catalog_path(paths.snapshots_dir)
     snapshot = _resolve_catalog_path(paths.snapshots_dir / snapshot_id)
     return (
-        snapshot.parent == root
-        and _resolve_catalog_path(paths.database_for(snapshot_id)).parent == snapshot
+        snapshot
+        if (
+            snapshot.parent == root
+            and _resolve_catalog_path(paths.database_for(snapshot_id)).parent
+            == snapshot
+        )
+        else None
     )
 
 
+def _database_contained(paths: CatalogPaths, snapshot_id: str) -> bool:
+    return _contained_snapshot(paths, snapshot_id) is not None
+
+
 def _snapshot_contained(paths: CatalogPaths, snapshot_id: str) -> bool:
-    return _database_contained(paths, snapshot_id) and (
-        _resolve_catalog_path(paths.manifest_for(snapshot_id)).parent
-        == _resolve_catalog_path(paths.snapshots_dir / snapshot_id)
+    snapshot = _contained_snapshot(paths, snapshot_id)
+    return snapshot is not None and (
+        _resolve_catalog_path(paths.manifest_for(snapshot_id)).parent == snapshot
     )
 
 
 def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
     try:
-        if not stat.S_ISREG(paths.active_pointer.stat().st_mode):
-            return _ActivePointer(snapshot_id="")
-        data = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+        descriptor = os.open(
+            paths.active_pointer,
+            os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0),
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return _ActivePointer(snapshot_id="")
+            handle = os.fdopen(descriptor, "r", encoding="utf-8")
+            descriptor = -1  # Ownership transfers to the text stream.
+            with handle:
+                data = json.load(handle)
+        finally:
+            if descriptor != -1:
+                os.close(descriptor)
     except FileNotFoundError:
         return _ActivePointer(snapshot_id=None)
     except OSError as exc:
@@ -189,6 +210,7 @@ class _VerificationStatus(Enum):
     MISSING = auto()
     RECOVERY_REQUIRED = auto()
     OPERATIONAL_FAILURE = auto()
+    INCOMPATIBLE = auto()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -224,21 +246,53 @@ def _copy_source_failure(error: sqlite3.Error) -> bool:
     )
 
 
-def _catalog_problem(connection: sqlite3.Connection) -> str | None:
+def _schema_structural_error(error: sqlite3.Error) -> bool:
+    """Recognize broken dependencies without assuming unknown SQLite errors are damage."""
+    message = str(error)
+    return message.startswith(("no such table:", "no such column:")) or (
+        message.startswith("view ") and message.endswith(" is circularly defined")
+    )
+
+
+def _catalog_problem(connection: sqlite3.Connection) -> _DatabaseVerification:
+    def corrupt(message: str) -> _DatabaseVerification:
+        return _DatabaseVerification(
+            status=_VerificationStatus.CORRUPT, error=sqlite3.DatabaseError(message)
+        )
+
     objects = dict(connection.execute("SELECT name, type FROM sqlite_master"))
+    if objects.get("snapshot_meta") != "table":
+        return corrupt("catalog is missing required table snapshot_meta")
+    metadata = dict(connection.execute("SELECT key, value FROM snapshot_meta"))
+    version = metadata.get("schema_version", "")
+    if (
+        not isinstance(version, str)
+        or not version.isascii()
+        or not version.isdecimal()
+        or version.startswith("0")
+    ):
+        return corrupt("catalog metadata schema version is missing or inconsistent")
+    snapshot_id = metadata.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        return corrupt("catalog metadata snapshot identity is missing")
+    if version != str(SCHEMA_VERSION):
+        return _DatabaseVerification(
+            status=_VerificationStatus.INCOMPATIBLE,
+            error=sqlite3.DatabaseError(
+                f"unsupported catalog schema version {version}"
+            ),
+            snapshot_id=snapshot_id,
+        )
     for name, (kind, required) in _REQUIRED_COLUMNS.items():
         if objects.get(name) != kind:
-            return f"catalog is missing required {kind} {name}"
+            return corrupt(f"catalog is missing required {kind} {name}")
         # Identifiers come exclusively from the closed schema allowlist.
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info('{name}')")}
         if not required.issubset(columns):
-            return f"catalog has incomplete columns for {name}"
-    metadata = dict(connection.execute("SELECT key, value FROM snapshot_meta"))
-    if metadata.get("schema_version") != str(SCHEMA_VERSION):
-        return "catalog metadata schema version is missing or inconsistent"
-    if not isinstance(metadata.get("snapshot_id"), str) or not metadata["snapshot_id"]:
-        return "catalog metadata snapshot identity is missing"
-    return None
+            return corrupt(f"catalog has incomplete columns for {name}")
+    return _DatabaseVerification(
+        status=_VerificationStatus.HEALTHY, snapshot_id=snapshot_id
+    )
 
 
 def _verify_database(
@@ -246,7 +300,6 @@ def _verify_database(
 ) -> _DatabaseVerification:
     """Verify read-only, or roll back a confirmed hot journal under the lock."""
     probing_schema = False
-    snapshot_id = None
     try:
         if not stat.S_ISREG(database.stat().st_mode):
             return _DatabaseVerification(status=_VerificationStatus.MISSING)
@@ -257,14 +310,13 @@ def _verify_database(
         try:
             connection.execute("PRAGMA query_only = ON")
             row = connection.execute("PRAGMA quick_check").fetchone()
-            problem = "SQLite quick_check failed"
+            result = _DatabaseVerification(
+                status=_VerificationStatus.CORRUPT,
+                error=sqlite3.DatabaseError("SQLite quick_check failed"),
+            )
             if row is not None and row[0] == "ok":
                 probing_schema = True
-                problem = _catalog_problem(connection)
-                if problem is None:
-                    snapshot_id = connection.execute(
-                        "SELECT value FROM snapshot_meta WHERE key='snapshot_id'"
-                    ).fetchone()[0]
+                result = _catalog_problem(connection)
                 probing_schema = False
         except BaseException:
             with suppress(BaseException):
@@ -272,11 +324,7 @@ def _verify_database(
             raise
         else:
             connection.close()
-        if problem is not None:
-            return _DatabaseVerification(
-                status=_VerificationStatus.CORRUPT,
-                error=sqlite3.DatabaseError(problem),
-            )
+            return result
     except FileNotFoundError as exc:
         return _DatabaseVerification(status=_VerificationStatus.MISSING, error=exc)
     except (OSError, sqlite3.Error) as exc:
@@ -284,7 +332,12 @@ def _verify_database(
         if code == sqlite3.SQLITE_READONLY_ROLLBACK:
             status = _VerificationStatus.RECOVERY_REQUIRED
         elif (
-            (probing_schema and code & 0xFF == sqlite3.SQLITE_ERROR)
+            (
+                probing_schema
+                and isinstance(exc, sqlite3.Error)
+                and code & 0xFF == sqlite3.SQLITE_ERROR
+                and _schema_structural_error(exc)
+            )
             or _sqlite_corruption(code)
             or (isinstance(exc, OSError) and _structural_path_error(exc))
         ):
@@ -301,9 +354,6 @@ def _verify_database(
                 if _structural_path_error(path_error):
                     status = _VerificationStatus.CORRUPT
         return _DatabaseVerification(status=status, error=exc)
-    return _DatabaseVerification(
-        status=_VerificationStatus.HEALTHY, snapshot_id=snapshot_id
-    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -311,6 +361,7 @@ class _CatalogInspection:
     state: CatalogState
     verification: _DatabaseVerification | None = None
     error: OSError | sqlite3.Error | None = None
+    cache_skip_reason: str | None = None
 
 
 def _fingerprint(item: dict[str, Any]) -> FileFingerprint:
@@ -357,7 +408,8 @@ async def _inspect_catalog(
                 status=CatalogStatus.MISSING,
                 database_path=paths.configured_database,
                 manifest_path=paths.active_pointer,
-            )
+            ),
+            verification=verification,
         )
     if not snapshot_id:
         return _CatalogInspection(
@@ -368,6 +420,7 @@ async def _inspect_catalog(
                 diagnostics=("active snapshot pointer is invalid",),
             ),
             error=pointer.error,
+            verification=verification,
         )
     database = paths.database_for(snapshot_id)
     manifest_path = paths.manifest_for(snapshot_id)
@@ -377,7 +430,8 @@ async def _inspect_catalog(
         *,
         status: CatalogStatus = CatalogStatus.UNREADABLE,
         error: OSError | sqlite3.Error | None = None,
-        verification: _DatabaseVerification | None = None,
+        database_verification: _DatabaseVerification | None = None,
+        cache_skip_reason: str | None = None,
     ) -> _CatalogInspection:
         return _CatalogInspection(
             state=CatalogState(
@@ -388,7 +442,8 @@ async def _inspect_catalog(
                 diagnostics=(message,),
             ),
             error=error,
-            verification=verification,
+            verification=database_verification or verification,
+            cache_skip_reason=cache_skip_reason,
         )
 
     try:
@@ -427,7 +482,8 @@ async def _inspect_catalog(
                 retrieved_at=retrieved_at,
                 files=files,
                 schema_version=schema_version,
-            )
+            ),
+            verification=verification,
         )
     try:
         present = stat.S_ISREG(database.stat().st_mode)
@@ -438,7 +494,7 @@ async def _inspect_catalog(
     if not present:
         return unavailable(
             "snapshot database is missing",
-            verification=_DatabaseVerification(
+            database_verification=_DatabaseVerification(
                 status=_VerificationStatus.MISSING,
             ),
         )
@@ -450,11 +506,9 @@ async def _inspect_catalog(
         and "snapshot_id" in manifest
         and manifest["snapshot_id"] != verification.snapshot_id
     ):
-        verification = _DatabaseVerification(
-            status=_VerificationStatus.CORRUPT,
-            error=sqlite3.DatabaseError(
-                "database and manifest snapshot identities differ"
-            ),
+        return unavailable(
+            "database and manifest snapshot identities differ",
+            cache_skip_reason="previous catalog identity disagrees with its manifest",
         )
     if (
         verification is not None
@@ -464,7 +518,6 @@ async def _inspect_catalog(
             "hot rollback journal requires recovery; run `rebrickable refresh` to attempt recovery"
             if verification.status is _VerificationStatus.RECOVERY_REQUIRED
             else str(verification.error or "snapshot database is missing"),
-            verification=verification,
             error=verification.error
             if verification.status is _VerificationStatus.OPERATIONAL_FAILURE
             else None,

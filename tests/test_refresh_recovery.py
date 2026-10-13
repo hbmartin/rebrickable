@@ -206,15 +206,15 @@ async def test_candidate_storage_failure_stays_fatal(
 async def test_promotion_reuses_one_parsed_pointer(catalog_config, monkeypatch) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     sources = stable_sources(catalog_config)
-    original_read = Path.read_text
+    original_read = module.os.open
     reads = []
 
-    def read(path, *args: Any, **kwargs: Any) -> str:
+    def read(path, *args: Any, **kwargs: Any) -> int:
         if path == paths.active_pointer:
             reads.append(path)
         return original_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(module.os, "open", read)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     await module.refresh_catalog(catalog_config)
     assert (
