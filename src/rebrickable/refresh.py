@@ -182,10 +182,18 @@ def _reuse_archive(
         opened = os.fstat(handle.fileno())
 
         def same_file(candidate: os.stat_result) -> bool:
-            return stat.S_ISREG(candidate.st_mode) and (
-                candidate.st_dev,
-                candidate.st_ino,
-            ) == (opened.st_dev, opened.st_ino)
+            # Inodes can be reused immediately after unlinking. Include file
+            # metadata to reject replacement or mutation before reading bytes.
+            return stat.S_ISREG(candidate.st_mode) and all(
+                getattr(candidate, name) == getattr(opened, name)
+                for name in (
+                    "st_dev",
+                    "st_ino",
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                )
+            )
 
         try:
             checked = identity()

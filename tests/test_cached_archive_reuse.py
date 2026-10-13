@@ -7,6 +7,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import IO, Any
 
 import httpx2
@@ -314,3 +315,37 @@ def test_reuse_releases_descriptor_when_file_wrapper_fails(
     assert len(descriptors) == 1
     with pytest.raises(OSError):
         os.fstat(descriptors[0])
+
+
+@pytest.mark.parametrize("changed", ["st_size", "st_mtime_ns", "st_ctime_ns"])
+def test_reused_inode_with_changed_metadata_is_rejected_before_reading(
+    catalog_config, tmp_path, monkeypatch, changed
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    source = paths.snapshots_dir / "fixture-snapshot" / "parts.csv.gz"
+    previous = next(
+        item
+        for item in asyncio.run(catalog_state(catalog_config)).files
+        if item.dataset == "parts"
+    )
+    before = source.stat()
+    metadata = {
+        name: getattr(before, name)
+        for name in (
+            "st_mode",
+            "st_dev",
+            "st_ino",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+    }
+    metadata[changed] += 1
+    monkeypatch.setattr(
+        module.os, "fstat", lambda _descriptor: SimpleNamespace(**metadata)
+    )
+    destination = tmp_path / "reuse.gz"
+    assert not module._reuse_archive(
+        paths, "fixture-snapshot", source.name, destination, previous
+    )
+    assert not destination.exists()
