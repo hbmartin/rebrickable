@@ -166,7 +166,7 @@ async def test_open_connection_failure_closes_and_releases(
     monkeypatch.setattr(aiosqlite.Connection, "close", record_close)
     with pytest.raises(OSError, match="setup failed"):
         await open_catalog(catalog_config)
-    assert len(closed) == 2
+    assert len(closed) == 1
     with FileLock(CatalogPaths.from_config(catalog_config).lock_file, timeout=0):
         pass
 
@@ -282,7 +282,7 @@ async def test_cancelled_connection_open_closes_worker_connection(
     def connect(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
         connection = factory(*args, **kwargs)
         opened.append(connection)
-        if len(opened) == 2:
+        if len(opened) == 1:
             connector = connection._connector
 
             def delayed() -> Any:
@@ -305,8 +305,8 @@ async def test_cancelled_connection_open_closes_worker_connection(
         release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert len(opened) == 2
-    assert opened[1]._connection is None
+    assert len(opened) == 1
+    assert opened[0]._connection is None
     with FileLock(CatalogPaths.from_config(catalog_config).lock_file, timeout=0):
         pass
 

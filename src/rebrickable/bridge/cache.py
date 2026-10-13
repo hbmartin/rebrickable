@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from filelock import FileLock
 
-from rebrickable.catalog.database import CatalogPaths
+from rebrickable.catalog.database import CatalogPaths, _read_pointer
 from rebrickable.config import Config
 from rebrickable.errors import CatalogUnavailableError
 
@@ -37,17 +37,9 @@ def store_crosswalks(
     retrieved_at = datetime.now(UTC).isoformat()
     lock = FileLock(paths.lock_file, timeout=config.lock_timeout)
     with lock:
-        try:
-            pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
-            snapshot_id = str(pointer["snapshot_id"])
-        except (
-            OSError,
-            KeyError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as exc:
-            raise CatalogUnavailableError("catalog is not ready") from exc
+        snapshot_id = _read_pointer(paths)
+        if not snapshot_id:
+            raise CatalogUnavailableError("catalog is not ready")
         database = paths.database_for(snapshot_id)
         if not database.is_file():
             raise CatalogUnavailableError("catalog is not ready")

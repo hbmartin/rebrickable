@@ -188,8 +188,11 @@ update client models, wrappers, docs, and tests as needed. Do not use
   package must continue to import and work without the `ldraw` extra installed.
 - `src/rebrickable/cli.py` is the argparse CLI. Structured data goes to stdout;
   diagnostics and progress go to stderr. Preserve documented exit statuses.
-  Global `--format` appears before the subcommand; legacy local JSON/CSV flags
-  remain compatibility surfaces.
+  Embedded `cli.main()` returns a status without owning host stream cleanup;
+  only executable entry points may neutralize failed original standard streams.
+  Keep diagnostic encoding suppression separate from stdout suppression when
+  roles share a stream. Global `--format` appears before the subcommand; legacy
+  local JSON/CSV flags remain compatibility surfaces.
 - `src/rebrickable/config.py` and `src/rebrickable/dirs.py` own configuration
   loading, secret persistence rules, and platform-specific paths.
 - `src/rebrickable/types.py`, `src/rebrickable/errors.py`, and top-level
@@ -209,8 +212,20 @@ update client models, wrappers, docs, and tests as needed. Do not use
   must be dynamic, select them from a closed internal allowlist.
 - Treat downloaded CSV, XML, YAML, JSON, LDraw, and API payloads as untrusted
   input. Preserve size/depth/page bounds and safe XML/YAML parsing.
-- Do not modify an active catalog database in place. Refresh work belongs in a
-  staging snapshot that is validated before atomic promotion.
+- Keep active catalog rows and schema immutable during refresh. Refresh imports
+  belong in a staging snapshot validated before atomic promotion. The narrow
+  exception is SQLite's automatic hot rollback-journal recovery during explicit
+  refresh: confirm `SQLITE_READONLY_ROLLBACK`, hold the promotion lock, open the
+  existing source with `mode=rw`, enable `query_only`, finish recovery and close
+  it before copying the cache. Never create a missing source or apply catalog
+  edits through this recovery connection. Ordinary catalog reads remain
+  read-only.
+- Distinguish confirmed source corruption/absence from operational failures.
+  Permissions, resource exhaustion, contention, ambiguous I/O, and candidate
+  storage failures must abort refresh rather than discard cached mappings.
+- Resolve every active pointer through shared identifier and containment checks,
+  including bridge writers. Reject traversal, Windows filename aliases/reserved
+  names, and links escaping the snapshot boundary before database access.
 - Relationship data represents reviewable candidates, not guaranteed physical
   equivalence. Inventory history is catalog revision history, not market or
   manufacturing history.

@@ -15,7 +15,10 @@ from rebrickable import CatalogState, CatalogStatus
 from rebrickable import refresh as module
 from rebrickable.catalog.database import (
     CatalogPaths,
+    _DatabaseVerification,
     _read_active_pointer,
+    _VerificationStatus,
+    _verify_database,
     catalog_state,
 )
 from rebrickable.errors import CatalogImportError
@@ -67,19 +70,20 @@ async def test_corruption_during_refresh_recovers_and_reports_skipped_cache(
     catalog_config, monkeypatch
 ) -> None:
     paths = CatalogPaths.from_config(catalog_config)
-    original = module._catalog_state
+    original = module._inspect_catalog
     sources = stable_sources(catalog_config)
     events = []
 
     async def corrupt_before_promotion(
         config, pointer, *, verify=False
     ) -> CatalogState:
-        paths.database_for("fixture-snapshot").write_bytes(
-            b"corrupted after verification"
-        )
+        if not verify:
+            paths.database_for("fixture-snapshot").write_bytes(
+                b"corrupted after verification"
+            )
         return await original(config, pointer, verify=verify)
 
-    monkeypatch.setattr(module, "_catalog_state", corrupt_before_promotion)
+    monkeypatch.setattr(module, "_inspect_catalog", corrupt_before_promotion)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     report = await module.refresh_catalog(catalog_config, callback=events.append)
     assert any("skipped cached API mappings" in event.message for event in events)
@@ -122,7 +126,11 @@ def test_copy_failure_rolls_back_before_skipping_unreadable_source(
         def rollback(self) -> None:
             connection.rollback()
 
-    monkeypatch.setattr(module, "_previous_unreadable", lambda _path: True)
+    monkeypatch.setattr(
+        module,
+        "_verify_database",
+        lambda _path: _DatabaseVerification(status=_VerificationStatus.CORRUPT),
+    )
     try:
         assert module._copy_crosswalk(PartialCopy(), previous)
         assert connection.execute(
@@ -176,7 +184,7 @@ async def test_candidate_storage_failure_stays_fatal(
         )
 
     monkeypatch.setattr(module.sqlite3, "connect", connect)
-    monkeypatch.setattr(module, "_previous_unreadable", verification)
+    monkeypatch.setattr(module, "_verify_database", verification)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     with pytest.raises(CatalogImportError, match="candidate storage failed"):
         await module.refresh_catalog(catalog_config)
@@ -230,21 +238,30 @@ def test_copy_recovery_preserves_original_failure(
     connection.execute.side_effect = [
         None,
         error,
-        sqlite3.OperationalError("detach failed"),
+        sqlite3.OperationalError("detach failed") if failure == "detach" else None,
     ]
     if failure == "rollback":
         connection.rollback.side_effect = sqlite3.OperationalError("rollback failed")
     if failure != "healthy-source":
-        monkeypatch.setattr(module, "_previous_unreadable", lambda _path: True)
+        monkeypatch.setattr(
+            module,
+            "_verify_database",
+            lambda _path: _DatabaseVerification(status=_VerificationStatus.CORRUPT),
+        )
     with pytest.raises(sqlite3.DatabaseError, match="original read failure") as raised:
         module._copy_crosswalk(connection, previous)
     assert raised.value is error
 
 
 @pytest.mark.parametrize("result", [None, ("corrupt",)])
-def test_unreadable_source_verification_closes_connection(monkeypatch, result) -> None:
+def test_unreadable_source_verification_closes_connection(
+    catalog_config, monkeypatch, result
+) -> None:
     connection = Mock(spec=sqlite3.Connection)
     connection.execute.return_value.fetchone.return_value = result
     monkeypatch.setattr(module.sqlite3, "connect", lambda *_args, **_kwargs: connection)
-    assert module._previous_unreadable(Path("previous.sqlite"))
+    result = _verify_database(
+        CatalogPaths.from_config(catalog_config).database_for("fixture-snapshot")
+    )
+    assert result.status is _VerificationStatus.CORRUPT
     connection.close.assert_called_once_with()

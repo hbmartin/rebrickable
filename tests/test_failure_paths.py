@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Generator
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -49,25 +49,11 @@ async def test_manifest_missing_database_and_naive_date(catalog_config: Config) 
 async def test_quick_check_failure(
     catalog_config: Config, monkeypatch: pytest.MonkeyPatch, row: object
 ) -> None:
-    class Connection:
-        def __await__(self) -> Generator[Any, None, Connection]:
-            async def connect() -> Connection:
-                return self
-
-            return connect().__await__()
-
-        async def close(self) -> None:
-            pass
-
-        async def execute(self, _sql: str) -> Connection:
-            return self
-
-        async def fetchone(self) -> object:
-            return row
-
+    connection = Mock(spec=sqlite3.Connection)
+    connection.execute.return_value.fetchone.return_value = row
     monkeypatch.setattr(
-        "rebrickable.catalog.database.aiosqlite.connect",
-        lambda *_args, **_kwargs: Connection(),
+        "rebrickable.catalog.database.sqlite3.connect",
+        lambda *_args, **_kwargs: connection,
     )
     assert (await catalog_state(catalog_config, verify=True)).diagnostics == (
         "SQLite quick_check failed",

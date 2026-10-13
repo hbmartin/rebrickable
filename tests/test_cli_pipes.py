@@ -186,17 +186,51 @@ def test_unavailable_streams_do_not_crash(monkeypatch, capsys, absent) -> None:
     assert capsys.readouterr() == ("", "")
 
 
-def test_borrowed_descriptorless_stream_remains_open() -> None:
+def test_borrowed_descriptorless_stream_remains_open(monkeypatch) -> None:
     stream = io.StringIO("buffered data")
-    cli._silence_stream(stream)
+    write = stream.write
+    stream.write = Mock(side_effect=BrokenPipeError)
+    monkeypatch.setattr(
+        cli, "sys", SimpleNamespace(stdout=stream, stderr=io.StringIO())
+    )
+    silence = Mock(wraps=cli._silence_stream)
+    monkeypatch.setattr(cli, "_silence_stream", silence)
+    assert cli.main(["url", "part", "3001"]) == 0
+    silence.assert_called_once_with(stream)
     assert not stream.closed
+    stream.write = write
+    stream.seek(0, io.SEEK_END)
+    stream.write("host output")
+    assert stream.getvalue() == "buffered datahost output"
 
 
-def test_borrowed_descriptorless_buffer_remains_open() -> None:
-    stream = io.TextIOWrapper(io.BytesIO())
-    stream.write("pending output")
-    cli._silence_stream(stream)
+def test_borrowed_descriptorless_buffer_remains_open(monkeypatch) -> None:
+    class Buffer(io.BytesIO):
+        failed = False
+
+        def write(self, value) -> int:
+            if not self.failed:
+                self.failed = True
+                raise BrokenPipeError
+            return super().write(value)
+
+    buffer = Buffer(b"buffered before\n")
+    buffer.seek(0, io.SEEK_END)
+    stream = io.TextIOWrapper(buffer)
+    stream.write("pending output\n")
+    monkeypatch.setattr(
+        cli, "sys", SimpleNamespace(stdout=stream, stderr=io.StringIO())
+    )
+    silence = Mock(wraps=cli._silence_stream)
+    monkeypatch.setattr(cli, "_silence_stream", silence)
+    assert cli.main(["url", "part", "3001"]) == 0
+    silence.assert_called_once_with(stream)
     assert not stream.closed
+    stream.write("host output")
+    stream.flush()
+    assert buffer.getvalue().startswith(b"buffered before\n")
+    assert buffer.getvalue().endswith(b"host output")
+    stream.detach()
 
 
 @pytest.mark.parametrize("status", [0, 3, 4, 5])

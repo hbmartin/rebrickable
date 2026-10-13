@@ -8,10 +8,11 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import time
 import uuid
-from contextlib import closing, suppress
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,12 +26,14 @@ from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import (
     CatalogPaths,
-    _catalog_state,
+    _inspect_catalog,
     _read_active_pointer,
     _read_only_uri,
     _read_pointer,
     _safe_snapshot_id,
-    catalog_state,
+    _snapshot_contained,
+    _VerificationStatus,
+    _verify_database,
 )
 from rebrickable.catalog.importers import DATASETS, import_catalog, inspect_header
 from rebrickable.catalog.schema import SCHEMA_VERSION
@@ -134,47 +137,63 @@ async def _download_one(
         raise DownloadError(f"unable to download {url}: {exc}") from exc
 
 
-def _previous_unreadable(previous: Path) -> bool:
-    try:
-        with closing(sqlite3.connect(_read_only_uri(previous), uri=True)) as connection:
-            row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is None or row[0] != "ok"
-    except (OSError, sqlite3.Error):
-        return True
-
-
 def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
     """Copy cached mappings, recovering only from a confirmed unreadable source."""
-    attached = False
-    try:
-        connection.execute("ATTACH DATABASE ? AS previous", (_read_only_uri(previous),))
-        attached = True
-        connection.execute(
-            "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
-        )
-    except sqlite3.Error as exc:
-        # Discard any partial INSERT before trying to repair the new catalog.
+    recovered = False
+    while True:
+        attached = False
         try:
-            connection.rollback()
-        except sqlite3.Error:
-            raise exc from None
-        recoverable = getattr(exc, "sqlite_errorcode", None) in {
-            sqlite3.SQLITE_CORRUPT,
-            sqlite3.SQLITE_NOTADB,
-            sqlite3.SQLITE_CANTOPEN,
-            sqlite3.SQLITE_IOERR_READ,
-            sqlite3.SQLITE_IOERR_SHORT_READ,
-            sqlite3.SQLITE_IOERR_FSTAT,
-        }
-        if not recoverable or not _previous_unreadable(previous):
-            raise
-        if attached:
+            connection.execute(
+                "ATTACH DATABASE ? AS previous", (_read_only_uri(previous),)
+            )
+            attached = True
+            connection.execute(
+                "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
+            )
+        except sqlite3.Error as exc:
+            # Restore the candidate before probing or repairing the source.
             try:
-                connection.execute("DETACH DATABASE previous")
+                connection.rollback()
+                if attached:
+                    connection.execute("DETACH DATABASE previous")
             except sqlite3.Error:
                 raise exc from None
-        return True
-    return False
+            code = getattr(exc, "sqlite_errorcode", 0)
+            source_failure = code & 0xFF in {
+                sqlite3.SQLITE_CORRUPT,
+                sqlite3.SQLITE_NOTADB,
+                sqlite3.SQLITE_CANTOPEN,
+            } or code in {
+                sqlite3.SQLITE_READONLY_ROLLBACK,
+                sqlite3.SQLITE_IOERR_READ,
+                sqlite3.SQLITE_IOERR_SHORT_READ,
+                sqlite3.SQLITE_IOERR_FSTAT,
+                sqlite3.SQLITE_IOERR_CORRUPTFS,
+                sqlite3.SQLITE_IOERR_DATA,
+            }
+            if not source_failure:
+                raise
+            verification = _verify_database(previous)
+            if (
+                verification.status is _VerificationStatus.RECOVERY_REQUIRED
+                and not recovered
+            ):
+                recovered = True
+                verification = _verify_database(previous, recover_hot_journal=True)
+                if verification.status is _VerificationStatus.HEALTHY:
+                    continue
+            if verification.status in {
+                _VerificationStatus.CORRUPT,
+                _VerificationStatus.MISSING,
+            }:
+                return True
+            if (
+                verification.error is not None
+                and verification.status is _VerificationStatus.OPERATIONAL_FAILURE
+            ):
+                raise verification.error from exc
+            raise
+        return False
 
 
 def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
@@ -266,17 +285,26 @@ def _prune_snapshots(
         return
     if _read_pointer(paths) != active_id:
         return
+
+    def contained(snapshot_id: str) -> bool:
+        try:
+            return _snapshot_contained(paths, snapshot_id)
+        except (OSError, RuntimeError):
+            return False  # Uncertain cleanup targets are protected for a retry.
+
     keep = {active_id}
     if retain > 1 and previous_id is not None:
         keep.add(previous_id)
-    existing = {child.name for child in children if child.is_dir()}
+    existing = {
+        child.name for child in children if child.is_dir() and contained(child.name)
+    }
     for snapshot_id in history:
         if len(keep) >= retain:
             break
         if snapshot_id in existing:
             keep.add(snapshot_id)
     for child in children:
-        if not child.is_dir() or child.name in keep:
+        if not child.is_dir() or child.name in keep or not contained(child.name):
             continue
         if (
             not child.name.startswith(".incoming-")
@@ -297,13 +325,22 @@ def _promote_snapshot(
     staging: Path,
     incoming: Path,
     destination: Path,
-    previous_id: str | None,
     pointer: _ActivePointer,
-    crosswalk_source_id: str | None,
+    copy_cache: bool,
     retain: int,
 ) -> bool:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
+        previous_id = pointer.snapshot_id or None
+        if previous_id is not None:
+            try:
+                present = stat.S_ISDIR(
+                    (paths.snapshots_dir / previous_id).stat().st_mode
+                )
+            except FileNotFoundError:
+                present = False
+            if not present:
+                previous_id = None
         generation, prior_history = _activation_history(pointer)
         history = tuple(
             dict.fromkeys(
@@ -314,13 +351,14 @@ def _promote_snapshot(
                         item
                         for item in prior_history
                         if (paths.snapshots_dir / item).is_dir()
+                        and _snapshot_contained(paths, item)
                     ),
                 )
             )
         )
         previous = (
-            paths.database_for(crosswalk_source_id)
-            if crosswalk_source_id is not None
+            paths.database_for(previous_id)
+            if previous_id is not None and copy_cache
             else None
         )
         skipped_cache = _carry_crosswalk(
@@ -382,7 +420,14 @@ async def _refresh_attempt(
     callback: ProgressCallback | None,
 ) -> RefreshReport:
     paths = CatalogPaths.from_config(config)
-    prior_state = await catalog_state(config, verify=True)
+    prior_inspection = await _inspect_catalog(
+        config, _read_active_pointer(paths), verify=True
+    )
+    if prior_inspection.error is not None:
+        raise CatalogImportError(
+            f"unable to verify previous catalog: {prior_inspection.error}"
+        ) from prior_inspection.error
+    prior_state = prior_inspection.state
     prior_by_name = {item.dataset: item for item in prior_state.files}
     config.cache_path.mkdir(parents=True, exist_ok=True)
     await run_in_thread(_prune_abandoned_staging, config.cache_path)
@@ -524,33 +569,38 @@ async def _refresh_attempt(
             ) from exc
         try:
             pointer = _read_active_pointer(paths)
-            current_state = await _catalog_state(config, pointer)
+            inspection = await _inspect_catalog(config, pointer)
+            current_state = inspection.state
             if current_state.status is CatalogStatus.READY and (
                 prior_state.status is not CatalogStatus.READY
                 or current_state.snapshot_id != prior_state.snapshot_id
             ):
-                current_state = await _catalog_state(config, pointer, verify=True)
-            previous_id = (
-                pointer.snapshot_id
-                if pointer.snapshot_id
-                and (paths.snapshots_dir / pointer.snapshot_id).is_dir()
-                else None
+                inspection = await _inspect_catalog(config, pointer, verify=True)
+                current_state = inspection.state
+            if inspection.error is not None:
+                raise CatalogImportError(
+                    f"unable to verify previous catalog: {inspection.error}"
+                ) from inspection.error
+            verification = inspection.verification
+            copy_cache = current_state.status is CatalogStatus.READY or (
+                verification is not None
+                and verification.status is _VerificationStatus.RECOVERY_REQUIRED
             )
+            known_unreadable = verification is not None and verification.status in {
+                _VerificationStatus.CORRUPT,
+                _VerificationStatus.MISSING,
+            }
             skipped_cache = await run_in_thread(
                 _promote_snapshot,
                 paths,
                 staging=staging,
                 incoming=incoming,
                 destination=destination,
-                previous_id=previous_id,
                 pointer=pointer,
-                crosswalk_source_id=(
-                    current_state.snapshot_id
-                    if current_state.status is CatalogStatus.READY
-                    else None
-                ),
+                copy_cache=copy_cache,
                 retain=config.snapshot_retention,
             )
+            skipped_cache = skipped_cache or known_unreadable
         finally:
             lock.release()
         if skipped_cache:

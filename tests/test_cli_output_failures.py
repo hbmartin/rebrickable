@@ -178,7 +178,13 @@ def test_borrowed_binary_stream_keeps_descriptor(monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(
             cli, "sys", SimpleNamespace(stdout=stream, stderr=io.StringIO())
         )
-        cli._silence_stream(stream)
+        original_write = stream.write
+        stream.write = Mock(side_effect=BrokenPipeError)
+        silence = Mock(wraps=cli._silence_stream)
+        monkeypatch.setattr(cli, "_silence_stream", silence)
+        assert cli.main(["url", "part", "3001"]) == 0
+        silence.assert_called_once_with(stream)
+        stream.write = original_write
         assert not raw.closed
         stream.write("still writable")
         stream.flush()
@@ -332,3 +338,78 @@ def test_encoding_failure_on_stderr_still_flushes_buffer(monkeypatch) -> None:
     assert buffer.getvalue() == b"buffered diagnostic\n"
     assert stdout.getvalue() == "healthy output"
     stderr.detach()
+
+
+@pytest.mark.parametrize("status", range(6))
+def test_aliased_encoding_failure_only_suppresses_diagnostics(
+    monkeypatch, status
+) -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="ascii")
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stream))
+
+    async def run(_args) -> int:
+        cli._write_stderr("buffered diagnostic\n")
+        cli._write_stderr("é")
+        cli._write_stderr("suppressed diagnostic")
+        cli._write_stdout("healthy ASCII output\n", status=status)
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    for _ in range(2):
+        assert cli.main(["url", "part", "3001"]) == status
+    assert buffer.getvalue() == b"buffered diagnostic\nhealthy ASCII output\n" * 2
+    stream.write("host still works")
+    stream.flush()
+    assert buffer.getvalue().endswith(b"host still works")
+    stream.detach()
+
+
+@pytest.mark.parametrize("status", range(6))
+@pytest.mark.parametrize(
+    "error",
+    [BrokenPipeError(errno.EPIPE, "pipe closed"), OSError(errno.ENOSPC, "full")],
+)
+def test_aliased_physical_failure_keeps_its_classification(
+    monkeypatch, status, error
+) -> None:
+    stream = Mock(spec=io.StringIO, closed=False)
+    stream.write.side_effect = error
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stream))
+
+    async def run(_args) -> int:
+        cli._write_stderr("diagnostic")
+        cli._write_stdout("result", status=status)
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == (
+        status if isinstance(error, BrokenPipeError) else 1
+    )
+    stream.write.assert_called_once_with("diagnostic")
+    stream.close.assert_not_called()
+
+
+def test_repeated_encoding_failure_does_not_neutralize_stream(monkeypatch) -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="ascii")
+    monkeypatch.setattr(
+        cli,
+        "sys",
+        SimpleNamespace(stdout=stream, __stdout__=stream, stderr=io.StringIO()),
+    )
+    silence = Mock(wraps=cli._silence_stream)
+    monkeypatch.setattr(cli, "_silence_stream", silence)
+
+    async def run(_args) -> int:
+        cli._write_stdout("preserved buffer\n")
+        with pytest.raises(OSError):
+            cli._write_stdout("é")
+        cli._write_stdout("suppressed output")
+        return 0
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli._entrypoint(["url", "part", "3001"]) == 1
+    silence.assert_not_called()
+    assert buffer.getvalue() == b"preserved buffer\n"
+    stream.detach()
