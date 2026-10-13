@@ -77,7 +77,7 @@ def test_pointer_size_boundary(
     if extra > 0:
         handles[0].read.assert_not_called()
     else:
-        handles[0].read.assert_called_once_with(database._MAX_POINTER_BYTES + 1)
+        handles[0].read.assert_called_once_with(length + 1)
     handles[0].close.assert_called_once()
 
 
@@ -103,7 +103,10 @@ def test_pointer_growth_after_descriptor_inspection_is_bounded(
     monkeypatch.setattr(database.os, "fstat", fstat)
     monkeypatch.setattr(database.os, "fdopen", fdopen)
     assert database._read_active_pointer(paths).snapshot_id == ""
-    reads[0].assert_called_once_with(database._MAX_POINTER_BYTES + 1)
+    assert sum(call.args[0] for call in reads[0].call_args_list) == (
+        database._MAX_POINTER_BYTES + 1
+    )
+    assert all(0 < call.args[0] <= 65_536 for call in reads[0].call_args_list)
 
 
 async def test_refresh_preserves_orphan_with_deep_activation_marker(
@@ -171,7 +174,7 @@ async def test_promotion_enforces_exact_encoded_pointer_limit(
         module, "_download_one", downloader(stable_sources(catalog_config))
     )
     if extra < 0:
-        with pytest.raises(CatalogImportError, match="pointer exceeds the 1 MiB limit"):
+        with pytest.raises(CatalogImportError, match="exceeds the 1 MiB limit"):
             await module.refresh_catalog(catalog_config)
         assert paths.active_pointer.read_bytes() == before
         assert paths.database_for("fixture-snapshot").is_file()
@@ -189,7 +192,8 @@ async def test_promotion_enforces_exact_encoded_pointer_limit(
 
 @pytest.mark.parametrize("stage", ["rollback", "detach"])
 @pytest.mark.parametrize(
-    "cleanup_type", [RuntimeError, KeyboardInterrupt, SystemExit, MemoryError]
+    "cleanup_type",
+    [RuntimeError, KeyboardInterrupt, SystemExit, MemoryError, asyncio.CancelledError],
 )
 def test_copy_cleanup_exposes_both_failures_and_aborts_recovery(
     catalog_config: Config,
@@ -209,10 +213,17 @@ def test_copy_cleanup_exposes_both_failures_and_aborts_recovery(
         connection.rollback.side_effect = cleanup
     verifier = Mock(side_effect=AssertionError("failed cleanup must abort recovery"))
     monkeypatch.setattr(module, "_verify_database", verifier)
-    with pytest.raises(sqlite3.OperationalError) as raised:
+    ordinary = issubclass(cleanup_type, Exception)
+    with pytest.raises(
+        sqlite3.OperationalError if ordinary else cleanup_type
+    ) as raised:
         module._copy_crosswalk(connection, source)
-    assert raised.value is original
-    assert raised.value.__cause__ is cleanup
+    assert raised.value is (original if ordinary else cleanup)
+    if ordinary:
+        assert raised.value.__cause__ is None
+        assert any(stage.lower() in note.lower() for note in raised.value.__notes__)
+    else:
+        assert raised.value.__context__ is original
     rendered = "".join(traceback.format_exception(raised.value))
     assert "original source failure" in rendered
     assert "secondary cleanup failure" in rendered
@@ -241,9 +252,10 @@ async def test_schema_errors_report_found_and_supported_versions(
     opener = RebrickableSession.connect if eager else database.open_catalog
     with pytest.raises(CatalogSchemaError) as raised:
         await opener(catalog_config)
-    assert (
-        str(raised.value)
-        == "catalog schema version 2 does not match supported version 1"
+    assert str(raised.value) == (
+        "catalog database schema version 2 does not match supported version 1"
+        if source == "database"
+        else "catalog manifest declares schema version 2; supported version is 1"
     )
 
 

@@ -74,16 +74,24 @@ renamed with its pointer updated without rewriting matching logical identities.
 Manifest damage does not by itself discard a safely contained, verified mapping
 cache. An obstructed active-pointer destination fails before downloads, and
 promotion checks it again before installing the candidate.
-Pointer reads use one regular-file descriptor, with nonblocking opening where
-supported, so a file-to-FIFO swap cannot block the reader. Malformed or deeply
-nested pointer JSON, oversized integers, and pointers larger than 1 MiB are
-invalid. Promotion checks the exact encoded pointer size, including its final
-newline, before carrying mappings or moving the candidate. A pointer that would
-exceed the limit aborts refresh without truncating activation history or changing
-the active snapshot; review accumulated activation history if this occurs.
-Malformed or deeply nested activation markers preserve uncertain directories
-without interrupting pruning. An opening denial is structural only when a
-fresh probe confirms damage; inaccessible regular files remain operational.
+Pointer and activation-marker reads use one regular-file descriptor, with
+nonblocking opening where supported, so a file-to-FIFO swap cannot block the
+reader. Both are limited to 1 MiB and check growth after descriptor inspection;
+small files do not reserve the full limit. Malformed or deeply nested JSON and
+integers exceeding 4,300 digits are invalid, independently of Python's global
+integer-conversion setting. An existing oversized pointer reports its path and
+observed size and stops refresh for review without overwriting its history or
+cached mappings. Refresh checks the exact prospective pointer encoding,
+including its final LF, before downloads and again under the promotion lock
+before carrying mappings or moving the candidate. Capacity errors include the
+path, byte limit, encoded size, and history count. They stop refresh even if the
+upstream datasets might be unchanged; review accumulated activation history
+instead of truncating it. Unsafe, oversized, inaccessible, malformed or deeply
+nested activation markers preserve uncertain directories without interrupting
+pruning. An opening denial is structural only when a fresh probe confirms
+damage; inaccessible regular files remain operational. Failure probes inspect
+the link itself only when nofollow opening is supported and enabled; otherwise
+they follow the target to match the opening behavior.
 Pointer-parent checks stop at the filesystem root, and promotion rechecks the destination after
 carryover and staging movement, immediately before installation.
 Database verification is independent of manifest classification. An identity
@@ -93,7 +101,9 @@ cache. These identity checks also apply to partial manifests and to the
 attached copy source after journal recovery. An unsupported database schema
 reports `SCHEMA_MISMATCH`; opening it raises `CatalogSchemaError` with the found
 and supported versions when available, and explicit refresh replaces it without
-copying its mappings.
+copying its mappings. Schema errors distinguish database versions from manifest
+declarations. After journal recovery, a known identity mismatch skips another
+attach; eligible sources still undergo the transaction's metadata check.
 Healthy verification is reused only when the resolved database identity, size,
 modification/change times, and journal/WAL sidecars are unchanged. Changes to
 those signatures trigger verification again under the promotion lock before
@@ -105,9 +115,12 @@ filesystems, may evade it. Attached source metadata is still checked inside the
 copy transaction before inserting mappings. Missing
 SQLite features, including modules, functions and collations, are
 operational errors rather than proof of catalog corruption.
-If rollback or detachment fails during cache-copy cleanup, the original SQLite
-exception remains primary and the cleanup exception is retained as its explicit
-cause. Recovery does not proceed after failed cleanup.
+If rollback or detachment fails during cache-copy cleanup, ordinary cleanup
+errors, including `MemoryError`, leave the original SQLite exception primary;
+its notes identify the cleanup phase and retain the cleanup traceback. Cleanup
+cancellation and exit exceptions, including `CancelledError`,
+`KeyboardInterrupt`, and `SystemExit`, propagate with the SQLite error as
+context. Recovery does not proceed after any failed cleanup.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed

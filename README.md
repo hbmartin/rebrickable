@@ -104,7 +104,9 @@ asyncio.run(main())
   verification is reused only while the database and journal/WAL signatures
   remain unchanged. Reuse assumes immutable snapshots; external edits that leave
   identical filesystem signatures may go undetected. Active pointers are limited
-  to 1 MiB, and promotion checks that limit before moving a candidate. Existing
+  to 1 MiB. Refresh preserves oversized pointers for review and checks activation
+  history capacity before downloads and again under the promotion lock. Bounded
+  activation-marker reads prevent special files from trapping pruning. Existing
   cache-copy rules remain unchanged; see the
   [refresh guidance](https://hbmartin.github.io/rebrickable/quickstart/) for metadata disagreements and safe
   cached-file reuse.

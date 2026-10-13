@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+import traceback
 import uuid
 from contextlib import ExitStack, suppress
 from dataclasses import asdict
@@ -36,6 +37,7 @@ from rebrickable.catalog.database import (
     _inspect_catalog,
     _open_regular_file,
     _read_active_pointer,
+    _read_bounded_json,
     _read_only_uri,
     _read_pointer,
     _resolve_catalog_path,
@@ -77,16 +79,20 @@ def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
         callback(event)
 
 
+def _encode_json(payload: dict[str, Any]) -> bytes:
+    return f"{json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n".encode()
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    encoded = _encode_json(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}."
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
         durable_replace(temporary, path)
@@ -280,12 +286,23 @@ def _copy_crosswalk(
             )
         except sqlite3.Error as exc:
             # Restore the candidate before probing or repairing the source.
+            cleanup_failure = None
+            cleanup_phase = "rollback"
             try:
                 connection.rollback()
                 if attached:
+                    cleanup_phase = "DETACH"
                     connection.execute("DETACH DATABASE previous")
-            except BaseException as cleanup_error:
-                raise exc from cleanup_error
+            except Exception as cleanup_error:  # noqa: BLE001 - ordinary cleanup failures leave the SQLite exception primary
+                cleanup_failure = cleanup_error
+            if cleanup_failure is not None:
+                detail = "".join(
+                    traceback.format_exception(cleanup_failure, chain=False)
+                )
+                exc.add_note(
+                    f"mapping cache {cleanup_phase} cleanup also failed:\n{detail}"
+                )
+                raise
             code = getattr(exc, "sqlite_errorcode", 0)
             if not _copy_source_failure(exc):
                 raise
@@ -298,6 +315,8 @@ def _copy_crosswalk(
                 if verification.status is _VerificationStatus.RECOVERY_REQUIRED:
                     verification = _verify_database(previous, recover_hot_journal=True)
                 if verification.status is _VerificationStatus.HEALTHY:
+                    if reason := eligibility.reason(verification):
+                        return reason
                     continue
             if verification.status in {
                 _VerificationStatus.CORRUPT,
@@ -418,7 +437,10 @@ def _managed_snapshot(path: Path, generation: str | None) -> bool:
     if generation is None:
         return False
     try:
-        marker = json.loads((path / _ACTIVATION_MARKER).read_text(encoding="utf-8"))
+        with _open_regular_file(path / _ACTIVATION_MARKER, nofollow=True) as opened:
+            if opened is None:
+                return False
+            marker = _read_bounded_json(*opened, limit=_MAX_POINTER_BYTES)
     except (OSError, ValueError, RecursionError):
         return False
     return marker == {"generation": generation}
@@ -478,6 +500,45 @@ def _prune_snapshots(
             continue
 
 
+def _prospective_pointer(
+    paths: CatalogPaths, pointer: _ActivePointer, snapshot_id: str
+) -> tuple[dict[str, Any], str | None]:
+    """Preserve activation provenance and check capacity before expensive work."""
+    if pointer.size_error is not None:
+        raise CatalogImportError(
+            f"active snapshot pointer {paths.active_pointer} {pointer.size_error}; "
+            "review accumulated activation history"
+        )
+    previous_id = pointer.activation_id
+    if previous_id is not None and not _history_present(paths, previous_id):
+        previous_id = None
+    generation, prior_history = _activation_history(pointer)
+    history = tuple(
+        dict.fromkeys(
+            (
+                snapshot_id,
+                *((previous_id,) if previous_id is not None else ()),
+                # Keep uncertain paths and earlier failed deletions for a retry.
+                *(item for item in prior_history if _history_present(paths, item)),
+            )
+        )
+    )
+    payload = {
+        "snapshot_id": snapshot_id,
+        "_activation_generation": generation,
+        "_activation_history": history,
+    }
+    length = len(_encode_json(payload))
+    if length > _MAX_POINTER_BYTES:
+        raise CatalogImportError(
+            f"active snapshot pointer {paths.active_pointer} exceeds the 1 MiB limit "
+            f"({length} bytes > {_MAX_POINTER_BYTES} bytes; "
+            f"{len(history)} activation history entries); "
+            "review accumulated activation history"
+        )
+    return payload, previous_id
+
+
 def _promote_snapshot(
     paths: CatalogPaths,
     *,
@@ -492,35 +553,11 @@ def _promote_snapshot(
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
         _check_pointer_destination(paths)
-        previous_id = pointer.activation_id
-        if previous_id is not None and not _history_present(paths, previous_id):
-            previous_id = None
-        generation, prior_history = _activation_history(pointer)
-        history = tuple(
-            dict.fromkeys(
-                (
-                    destination.name,
-                    *((previous_id,) if previous_id is not None else ()),
-                    # Keep proven activation identities even when containment
-                    # is uncertain or an earlier deletion failed.
-                    *(item for item in prior_history if _history_present(paths, item)),
-                )
-            )
+        pointer_payload, previous_id = _prospective_pointer(
+            paths, pointer, destination.name
         )
-        pointer_payload = {
-            "snapshot_id": destination.name,
-            "_activation_generation": generation,
-            "_activation_history": history,
-        }
-        # Match _atomic_json's compact UTF-8 encoding and final LF exactly.
-        pointer_bytes = (
-            json.dumps(pointer_payload, sort_keys=True, separators=(",", ":")) + "\n"
-        ).encode("utf-8")
-        if len(pointer_bytes) > _MAX_POINTER_BYTES:
-            raise CatalogImportError(
-                "active snapshot pointer exceeds the 1 MiB limit; "
-                "review accumulated snapshot activation history"
-            )
+        generation = pointer_payload["_activation_generation"]
+        history = pointer_payload["_activation_history"]
         previous = None
         skipped_cache = None
         if pointer.activation_id is not None:
@@ -615,9 +652,11 @@ async def _refresh_attempt(
 ) -> RefreshReport:
     paths = CatalogPaths.from_config(config)
     await run_in_thread(_check_pointer_destination, paths)
-    prior_inspection = await _inspect_catalog(
-        config, _read_active_pointer(paths), verify=True
-    )
+    now = datetime.now(UTC)
+    snapshot_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    pointer = await run_in_thread(_read_active_pointer, paths)
+    await run_in_thread(_prospective_pointer, paths, pointer, snapshot_id)
+    prior_inspection = await _inspect_catalog(config, pointer, verify=True)
     if prior_inspection.error is not None:
         raise CatalogImportError(
             f"unable to verify previous catalog: {prior_inspection.error}"
@@ -627,8 +666,6 @@ async def _refresh_attempt(
     config.cache_path.mkdir(parents=True, exist_ok=True)
     await run_in_thread(_prune_abandoned_staging, config.cache_path)
     staging = Path(tempfile.mkdtemp(prefix="refresh-", dir=config.cache_path))
-    now = datetime.now(UTC)
-    snapshot_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
     incoming = paths.snapshots_dir / f".incoming-{snapshot_id}"
     file_paths = {item.name: staging / item.filename for item in DATASETS}
     metadata: dict[str, dict[str, Any]] = {}

@@ -67,6 +67,7 @@ class _ActivePointer:
     snapshot_id: str | None
     data: dict[str, Any] = field(default_factory=dict)
     error: OSError | None = None
+    size_error: _OversizedJsonError | None = None
 
     @property
     def activation_id(self) -> str | None:
@@ -170,13 +171,13 @@ def _open_regular_file(
 ) -> Generator[tuple[BinaryIO, os.stat_result] | None, None, None]:
     """Own one regular-file descriptor, preserving unconfirmed opening failures."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-    if nofollow:
-        flags |= getattr(os, "O_NOFOLLOW", 0)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", 0) if nofollow else 0
+    flags |= nofollow_flag
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
         try:
-            metadata = path.stat(follow_symlinks=not nofollow)
+            metadata = path.stat(follow_symlinks=not bool(nofollow_flag))
         except OSError as probe_error:
             if _structural_path_error(probe_error):
                 raise probe_error from exc
@@ -194,7 +195,7 @@ def _open_regular_file(
             return
         # Stream construction can close its raw layer before raising. Keep
         # descriptor ownership here throughout construction and stream cleanup.
-        handle = os.fdopen(descriptor, "rb", closefd=False)
+        handle = os.fdopen(descriptor, "rb", buffering=8192, closefd=False)
         try:
             yield handle, metadata
         except BaseException:
@@ -216,24 +217,65 @@ def _open_regular_file(
                 os.close(owned)
 
 
+class _OversizedJsonError(ValueError):
+    def __init__(self, observed_bytes: int, limit: int) -> None:
+        self.observed_bytes = observed_bytes
+        super().__init__(
+            f"exceeds the 1 MiB limit ({limit} bytes; "
+            f"observed at least {observed_bytes} bytes)"
+        )
+
+
+def _bounded_json_int(value: str) -> int:
+    """Parse at most 4,300 digits independently of the interpreter setting."""
+    digits = value.removeprefix("-")
+    if len(digits) > 4300:
+        raise ValueError("JSON integer exceeds the 4,300-digit limit")
+    number = 0
+    for start in range(0, len(digits), 9):
+        chunk = digits[start : start + 9]
+        number = number * 10 ** len(chunk) + int(chunk)
+    return -number if value.startswith("-") else number
+
+
+def _read_bounded_json(
+    handle: BinaryIO, metadata: os.stat_result, *, limit: int
+) -> Any:
+    """Read one regular descriptor through EOF, allowing bounded post-stat growth."""
+    if metadata.st_size > limit:
+        raise _OversizedJsonError(metadata.st_size, limit)
+    requested = metadata.st_size + 1
+    payload = handle.read(requested)
+    if len(payload) == requested:
+        blocks = [payload]
+        length = len(payload)
+        while length <= limit:
+            block = handle.read(min(65_536, limit + 1 - length))
+            if not block:
+                break
+            blocks.append(block)
+            length += len(block)
+        if length > limit:
+            raise _OversizedJsonError(length, limit)
+        payload = b"".join(blocks)
+    return json.loads(payload.decode("utf-8"), parse_int=_bounded_json_int)
+
+
 def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
     try:
         with _open_regular_file(paths.active_pointer) as opened:
             if opened is None:
                 return _ActivePointer(snapshot_id="")
             handle, metadata = opened
-            if metadata.st_size > _MAX_POINTER_BYTES:
-                return _ActivePointer(snapshot_id="")
-            payload = handle.read(_MAX_POINTER_BYTES + 1)
-            if len(payload) > _MAX_POINTER_BYTES:
-                return _ActivePointer(snapshot_id="")
-            data = json.loads(payload.decode("utf-8"))
+            data = _read_bounded_json(handle, metadata, limit=_MAX_POINTER_BYTES)
     except FileNotFoundError:
         return _ActivePointer(snapshot_id=None)
     except OSError as exc:
         return _ActivePointer(
             snapshot_id="", error=None if _structural_path_error(exc) else exc
         )
+    except _OversizedJsonError as exc:
+        return _ActivePointer(snapshot_id="", size_error=exc)
     except (ValueError, RecursionError):
         return _ActivePointer(snapshot_id="")
     snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else None
@@ -323,6 +365,11 @@ def _verification_reusable(
     *,
     allow_stable_negative: bool = False,
 ) -> bool:
+    """Reuse complete signatures for an immutable source.
+
+    Enable negative reuse only for fresh results obtained under the current
+    promotion lock, never for results retained across downloads.
+    """
     if (
         verification is None
         or (
@@ -619,7 +666,12 @@ async def _inspect_catalog(
                 status=CatalogStatus.UNREADABLE,
                 database_path=paths.configured_database,
                 manifest_path=paths.active_pointer,
-                diagnostics=("active snapshot pointer is invalid",),
+                diagnostics=(
+                    f"active snapshot pointer {paths.active_pointer} {pointer.size_error}; "
+                    "review accumulated activation history"
+                    if pointer.size_error is not None
+                    else "active snapshot pointer is invalid",
+                ),
             ),
             error=pointer.error,
             verification=verification,
@@ -637,7 +689,12 @@ async def _inspect_catalog(
         if verification is not None:
             if verification.status is _VerificationStatus.INCOMPATIBLE:
                 status = CatalogStatus.SCHEMA_MISMATCH
-                message = str(verification.error)
+                message = (
+                    f"catalog database schema version {verification.schema_version} "
+                    f"does not match supported version {SCHEMA_VERSION}"
+                    if verification.schema_version is not None
+                    else str(verification.error)
+                )
             elif verification.status is _VerificationStatus.OPERATIONAL_FAILURE:
                 error = verification.error
         return _CatalogInspection(
@@ -717,6 +774,12 @@ async def _inspect_catalog(
                 retrieved_at=retrieved_at,
                 files=files,
                 schema_version=schema_version,
+                diagnostics=(
+                    (
+                        f"catalog manifest declares schema version {schema_version}; "
+                        f"supported version is {SCHEMA_VERSION}"
+                    ),
+                ),
             ),
             verification=verification,
             cache_eligibility=eligibility,
@@ -794,8 +857,9 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
         if state.status is CatalogStatus.SCHEMA_MISMATCH:
             if state.schema_version is not None:
                 raise CatalogSchemaError(
-                    f"catalog schema version {state.schema_version} does not match "
-                    f"supported version {SCHEMA_VERSION}"
+                    "; ".join(state.diagnostics)
+                    or f"reported catalog schema version {state.schema_version} "
+                    f"does not match supported version {SCHEMA_VERSION}"
                 )
             raise CatalogSchemaError("catalog schema does not match this release")
         if state.status is CatalogStatus.UNREADABLE:

@@ -372,7 +372,8 @@ def test_reuse_releases_descriptor_when_file_wrapper_fails(
     )
     descriptors = []
 
-    def fail_wrapper(descriptor, _mode, *, closefd) -> IO[bytes]:
+    def fail_wrapper(descriptor, _mode, *, buffering, closefd) -> IO[bytes]:
+        del buffering
         assert not closefd
         descriptors.append(descriptor)
         raise OSError(errno.EMFILE, "file wrapper failed")

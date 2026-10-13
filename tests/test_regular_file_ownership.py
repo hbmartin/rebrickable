@@ -66,7 +66,8 @@ def test_failed_stream_construction_keeps_descriptor_ownership(
     other = []
     failure = MemoryError("stream construction failed")
 
-    def fdopen(descriptor, mode, *, closefd=True) -> Never:
+    def fdopen(descriptor, mode, *, buffering=-1, closefd=True) -> Never:
+        del buffering
         owned.append(descriptor)
         if after_raw:
             raw = io.FileIO(descriptor, mode, closefd=closefd)
@@ -92,8 +93,9 @@ def test_failed_stream_construction_keeps_descriptor_ownership(
 
 
 @pytest.mark.parametrize("nofollow", [False, True])
+@pytest.mark.parametrize("available", [False, True])
 def test_open_failure_probe_respects_nofollow(
-    catalog_config, monkeypatch, nofollow
+    catalog_config, monkeypatch, nofollow, available
 ) -> None:
     path = database.CatalogPaths.from_config(catalog_config).active_pointer
     target = path.with_name("pointer-target.json")
@@ -103,8 +105,9 @@ def test_open_failure_probe_respects_nofollow(
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
     error = PermissionError(errno.EACCES, "opening denied")
+    monkeypatch.setattr(database.os, "O_NOFOLLOW", 1 if available else 0, raising=False)
     monkeypatch.setattr(database.os, "open", Mock(side_effect=error))
-    if nofollow:
+    if nofollow and available:
         with database._open_regular_file(path, nofollow=True) as opened:
             assert opened is None
     else:
