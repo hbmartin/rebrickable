@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -59,7 +60,7 @@ def downloader(sources: dict[str, Path], *, unchanged: bool = False):
             "etag": '"fixture"',
             "last_modified": "Sat, 01 Aug 2026 00:00:00 GMT",
             "byte_length": destination.stat().st_size,  # noqa: ASYNC240 - small local fixture; no production I/O
-            "sha256": "a" * 64,
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         }
 
     return fake
@@ -252,16 +253,23 @@ async def test_corrupt_database_refresh_reimports_despite_304s(
 
 
 @pytest.mark.asyncio
-async def test_missing_copy_forward_source_raises_download_error(
+async def test_missing_copy_forward_source_downloads_replacement(
     catalog_config: Config, monkeypatch
 ) -> None:
     sources = snapshot_sources(catalog_config)
+    cached = sources["parts"]
+    fresh = cached.parent.parent.parent / "fresh-parts.csv.gz"
+    shutil.copy2(cached, fresh)
+    sources["parts"] = fresh
     monkeypatch.setattr(
         "rebrickable.refresh._download_one", downloader(sources, unchanged=True)
     )
-    sources["parts"].unlink()
-    with pytest.raises(DownloadError, match="unable to reuse cached"):
-        await refresh_catalog(catalog_config)
+    cached.unlink()
+    report = await refresh_catalog(catalog_config)
+    assert report.outcome is RefreshOutcome.UPDATED
+    assert (
+        await catalog_state(catalog_config, verify=True)
+    ).status is CatalogStatus.READY
 
 
 @pytest.mark.asyncio
@@ -307,6 +315,9 @@ async def test_promotion_uses_current_snapshot_and_protects_it_from_orphans(
         paths.snapshots_dir / "fixture-snapshot", paths.snapshots_dir / previous_id
     )
     with closing(sqlite3.connect(paths.database_for(previous_id))) as connection:
+        connection.execute(
+            "UPDATE snapshot_meta SET value=? WHERE key='snapshot_id'", (previous_id,)
+        )
         connection.execute(
             "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
             ("part", "ldraw", "newly-cached", "3001", "op", "2026-08-01", "abc"),

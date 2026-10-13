@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
 import stat
@@ -17,7 +18,7 @@ import aiosqlite
 from filelock import FileLock, Timeout
 
 from rebrickable._workers import acquire_lock, run_in_thread, settle
-from rebrickable.catalog.schema import SCHEMA_VERSION
+from rebrickable.catalog.schema import _REQUIRED_COLUMNS, SCHEMA_VERSION
 from rebrickable.config import Config
 from rebrickable.errors import (
     CatalogSchemaError,
@@ -66,6 +67,52 @@ class _ActivePointer:
     error: OSError | None = None
 
 
+_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CONIN$",
+        "CONOUT$",
+        *(
+            f"{prefix}{number}"
+            for prefix in ("COM", "LPT")
+            for number in "123456789¹²³"
+        ),
+    }
+)
+_STRUCTURAL_ERRNOS = frozenset(
+    {
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.EISDIR,
+        errno.ENAMETOOLONG,
+        errno.ELOOP,
+    }
+)
+_SQLITE_IOERR_DATA = getattr(sqlite3, "SQLITE_IOERR_DATA", 8202)
+_SQLITE_IOERR_CORRUPTFS = getattr(sqlite3, "SQLITE_IOERR_CORRUPTFS", 8458)
+_CORRUPTION_CODES = frozenset({_SQLITE_IOERR_DATA, _SQLITE_IOERR_CORRUPTFS})
+
+
+def _structural_path_error(error: OSError) -> bool:
+    return error.errno in _STRUCTURAL_ERRNOS
+
+
+def _resolve_catalog_path(path: Path) -> Path:
+    try:
+        try:
+            return path.resolve(strict=True)
+        except FileNotFoundError:
+            return path.resolve()
+    except RuntimeError as exc:
+        # Normalize Python 3.12's loop exception to the later Python behavior.
+        raise OSError(
+            errno.ELOOP, "snapshot contains a symlink loop", str(path)
+        ) from exc
+
+
 def _safe_snapshot_id(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -75,30 +122,17 @@ def _safe_snapshot_id(value: object) -> bool:
         and not any(
             ord(character) < 32 or character in '<>:"/\\|?*' for character in value
         )
-        and value.partition(".")[0].rstrip(" ").upper()
-        not in {
-            "CON",
-            "PRN",
-            "AUX",
-            "NUL",
-            "CONIN$",
-            "CONOUT$",
-            *(
-                f"{prefix}{number}"
-                for prefix in ("COM", "LPT")
-                for number in "123456789¹²³"
-            ),
-        }
+        and value.partition(".")[0].rstrip(" ").upper() not in _RESERVED_NAMES
     )
 
 
 def _snapshot_contained(paths: CatalogPaths, snapshot_id: str) -> bool:
-    root = paths.snapshots_dir.resolve()
-    snapshot = (paths.snapshots_dir / snapshot_id).resolve()
+    root = _resolve_catalog_path(paths.snapshots_dir)
+    snapshot = _resolve_catalog_path(paths.snapshots_dir / snapshot_id)
     return (
         snapshot.parent == root
-        and paths.database_for(snapshot_id).resolve().parent == snapshot
-        and paths.manifest_for(snapshot_id).resolve().parent == snapshot
+        and _resolve_catalog_path(paths.database_for(snapshot_id)).parent == snapshot
+        and _resolve_catalog_path(paths.manifest_for(snapshot_id)).parent == snapshot
     )
 
 
@@ -108,7 +142,9 @@ def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
     except FileNotFoundError:
         return _ActivePointer(snapshot_id=None)
     except OSError as exc:
-        return _ActivePointer(snapshot_id="", error=exc)
+        return _ActivePointer(
+            snapshot_id="", error=None if _structural_path_error(exc) else exc
+        )
     except (UnicodeError, json.JSONDecodeError):
         return _ActivePointer(snapshot_id="")
     snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else None
@@ -119,9 +155,9 @@ def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
             and _snapshot_contained(paths, snapshot_id)
         )
     except OSError as exc:
-        return _ActivePointer(snapshot_id="", error=exc)
-    except RuntimeError:
-        safe = False  # Python 3.12 reports symlink loops as RuntimeError.
+        return _ActivePointer(
+            snapshot_id="", error=None if _structural_path_error(exc) else exc
+        )
     return _ActivePointer(
         snapshot_id=snapshot_id if safe else "",
         data=data if isinstance(data, dict) else {},
@@ -146,6 +182,49 @@ class _DatabaseVerification:
     error: OSError | sqlite3.Error | None = None
 
 
+def _sqlite_corruption(code: int) -> bool:
+    return (
+        code & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
+        or code in _CORRUPTION_CODES
+    )
+
+
+def _copy_source_failure(error: sqlite3.Error) -> bool:
+    code = getattr(error, "sqlite_errorcode", 0)
+    return (
+        _sqlite_corruption(code)
+        or code & 0xFF
+        in {
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_ERROR,
+        }
+        or code
+        in {
+            sqlite3.SQLITE_READONLY_ROLLBACK,
+            sqlite3.SQLITE_IOERR_READ,
+            sqlite3.SQLITE_IOERR_SHORT_READ,
+            sqlite3.SQLITE_IOERR_FSTAT,
+        }
+    )
+
+
+def _catalog_problem(connection: sqlite3.Connection, snapshot_id: str) -> str | None:
+    objects = dict(connection.execute("SELECT name, type FROM sqlite_master"))
+    for name, (kind, required) in _REQUIRED_COLUMNS.items():
+        if objects.get(name) != kind:
+            return f"catalog is missing required {kind} {name}"
+        # Identifiers come exclusively from the closed schema allowlist.
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info('{name}')")}
+        if not required.issubset(columns):
+            return f"catalog has incomplete columns for {name}"
+    metadata = dict(connection.execute("SELECT key, value FROM snapshot_meta"))
+    if metadata.get("schema_version") != str(SCHEMA_VERSION):
+        return "catalog metadata schema version is missing or inconsistent"
+    if metadata.get("snapshot_id") != snapshot_id:
+        return "catalog metadata snapshot identity is missing or inconsistent"
+    return None
+
+
 def _verify_database(
     database: Path, *, recover_hot_journal: bool = False
 ) -> _DatabaseVerification:
@@ -160,16 +239,21 @@ def _verify_database(
         try:
             connection.execute("PRAGMA query_only = ON")
             row = connection.execute("PRAGMA quick_check").fetchone()
+            problem = (
+                "SQLite quick_check failed"
+                if row is None or row[0] != "ok"
+                else _catalog_problem(connection, database.parent.name)
+            )
         except BaseException:
             with suppress(OSError, sqlite3.Error):
                 connection.close()
             raise
         else:
             connection.close()
-        if row is None or row[0] != "ok":
+        if problem is not None:
             return _DatabaseVerification(
                 status=_VerificationStatus.CORRUPT,
-                error=sqlite3.DatabaseError("SQLite quick_check failed"),
+                error=sqlite3.DatabaseError(problem),
             )
     except FileNotFoundError as exc:
         return _DatabaseVerification(status=_VerificationStatus.MISSING, error=exc)
@@ -177,10 +261,9 @@ def _verify_database(
         code = getattr(exc, "sqlite_errorcode", 0)
         if code == sqlite3.SQLITE_READONLY_ROLLBACK:
             status = _VerificationStatus.RECOVERY_REQUIRED
-        elif code & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB} or code in {
-            sqlite3.SQLITE_IOERR_CORRUPTFS,
-            sqlite3.SQLITE_IOERR_DATA,
-        }:
+        elif _sqlite_corruption(code) or (
+            isinstance(exc, OSError) and _structural_path_error(exc)
+        ):
             status = _VerificationStatus.CORRUPT
         else:
             status = _VerificationStatus.OPERATIONAL_FAILURE
@@ -190,8 +273,9 @@ def _verify_database(
                     status = _VerificationStatus.MISSING
             except FileNotFoundError:
                 status = _VerificationStatus.MISSING
-            except OSError:
-                pass
+            except OSError as path_error:
+                if _structural_path_error(path_error):
+                    status = _VerificationStatus.CORRUPT
         return _DatabaseVerification(status=status, error=exc)
     return _DatabaseVerification(status=_VerificationStatus.HEALTHY)
 
@@ -223,15 +307,13 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
     reported READY without opening SQLite; database corruption is detected by
     `open_catalog` (which always verifies) or an explicit `verify=True`.
     """
-    return await _catalog_state(
-        config, _read_active_pointer(CatalogPaths.from_config(config)), verify=verify
-    )
-
-
-async def _catalog_state(
-    config: Config, pointer: _ActivePointer, *, verify: bool = False
-) -> CatalogState:
-    return (await _inspect_catalog(config, pointer, verify=verify)).state
+    return (
+        await _inspect_catalog(
+            config,
+            _read_active_pointer(CatalogPaths.from_config(config)),
+            verify=verify,
+        )
+    ).state
 
 
 async def _inspect_catalog(
@@ -280,6 +362,8 @@ async def _inspect_catalog(
         )
 
     try:
+        if not stat.S_ISREG(manifest_path.stat().st_mode):
+            return unavailable("snapshot manifest is not a regular file")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         schema_version = int(manifest["schema_version"])
         retrieved_at = datetime.fromisoformat(str(manifest["retrieved_at"]))
@@ -290,12 +374,17 @@ async def _inspect_catalog(
         except FileNotFoundError:
             status = CatalogStatus.UNREADABLE
         except OSError as exc:
-            return unavailable(str(exc), error=exc)
+            return unavailable(
+                str(exc), error=None if _structural_path_error(exc) else exc
+            )
         else:
             status = CatalogStatus.IMPORT_REQUIRED
         return unavailable("snapshot manifest is missing", status=status)
     except OSError as exc:
-        return unavailable(f"unable to read manifest: {exc}", error=exc)
+        return unavailable(
+            f"unable to read manifest: {exc}",
+            error=None if _structural_path_error(exc) else exc,
+        )
     except (KeyError, TypeError, ValueError) as exc:
         return unavailable(f"invalid manifest: {exc}")
     if schema_version != SCHEMA_VERSION:
@@ -315,7 +404,7 @@ async def _inspect_catalog(
     except FileNotFoundError:
         present = False
     except OSError as exc:
-        return unavailable(str(exc), error=exc)
+        return unavailable(str(exc), error=None if _structural_path_error(exc) else exc)
     if not present:
         return unavailable(
             "snapshot database is missing",
@@ -329,7 +418,9 @@ async def _inspect_catalog(
         and verification.status is not _VerificationStatus.HEALTHY
     ):
         return unavailable(
-            str(verification.error or "snapshot database is missing"),
+            "hot rollback journal requires recovery; run `rebrickable refresh` to attempt recovery"
+            if verification.status is _VerificationStatus.RECOVERY_REQUIRED
+            else str(verification.error or "snapshot database is missing"),
             verification=verification,
             error=verification.error
             if verification.status is _VerificationStatus.OPERATIONAL_FAILURE

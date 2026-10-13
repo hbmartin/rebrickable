@@ -67,6 +67,8 @@ class _OutputState:
     failed: list[tuple[IO[str], BaseException, bool]] = field(default_factory=list)
     write_failed: list[tuple[IO[str], str, BaseException]] = field(default_factory=list)
     owned: tuple[tuple[IO[str], int], ...] = ()
+    stdout_written: list[IO[str]] = field(default_factory=list)
+    finalized: list[IO[str]] = field(default_factory=list)
 
 
 _output_state: ContextVar[_OutputState | None] = ContextVar("cli_output", default=None)
@@ -160,6 +162,9 @@ def _write_stdout(value: str | bytes, *, status: int = ExitCode.OK) -> None:
             stream.buffer.write(value)
         else:
             stream.write(value)
+        state = _output_state.get()
+        if state is not None and value:
+            state.stdout_written.append(stream)
     except (AttributeError, OSError, ValueError) as exc:
         pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
         _fail_stream(stream, exc, role="stdout", pipe=pipe_closed)
@@ -202,17 +207,29 @@ def _flush_stream(
 ) -> AttributeError | OSError | ValueError | None:
     if stream is None:
         return None
+    state = _output_state.get()
+    if state is not None:
+        if any(stream is item for item in state.finalized):
+            return None
+        state.finalized.append(stream)
+        # A write already established the physical failure. Reclassifying it
+        # here would duplicate diagnostics or blame stderr failures on stdout.
+        if _stream_failure(stream, role=role):
+            return None
+        if stream is sys.stderr and stream is sys.stdout:
+            role = (
+                "stdout"
+                if any(stream is item for item in state.stdout_written)
+                else "stderr"
+            )
     try:
         if stream.closed:
             return None
-        if failure := _stream_failure(stream, role=role):
-            error, pipe = failure
-            return None if pipe else OSError(str(error))
         stream.flush()
     except (AttributeError, OSError, ValueError) as exc:
         pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
         _fail_stream(stream, exc, role=role, pipe=pipe_closed)
-        if not pipe_closed:
+        if not pipe_closed and role == "stdout":
             return exc
     return None
 

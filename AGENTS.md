@@ -191,7 +191,9 @@ update client models, wrappers, docs, and tests as needed. Do not use
   Embedded `cli.main()` returns a status without owning host stream cleanup;
   only executable entry points may neutralize failed original standard streams.
   Keep diagnostic encoding suppression separate from stdout suppression when
-  roles share a stream. Global `--format` appears before the subcommand; legacy
+  roles share a stream. Track physical stream failure separately from its role:
+  diagnostic-only failures preserve status, shared streams finalize once, and
+  operational stdout errors are reported once. Global `--format` appears before the subcommand; legacy
   local JSON/CSV flags remain compatibility surfaces.
 - `src/rebrickable/config.py` and `src/rebrickable/dirs.py` own configuration
   loading, secret persistence rules, and platform-specific paths.
@@ -221,8 +223,18 @@ update client models, wrappers, docs, and tests as needed. Do not use
   edits through this recovery connection. Ordinary catalog reads remain
   read-only.
 - Distinguish confirmed source corruption/absence from operational failures.
+  Snapshot-local ENOENT, ENOTDIR, EISDIR, ENAMETOOLONG, ELOOP and nonregular
+  contents permit replacement. Use the shared filesystem/SQLite classifiers;
+  verify the closed version-1 schema allowlist and snapshot metadata in addition
+  to quick_check. A generic Windows access-denied error alone is not structural
+  evidence. Hot-journal diagnostics must explain explicit refresh recovery.
   Permissions, resource exhaustion, contention, ambiguous I/O, and candidate
   storage failures must abort refresh rather than discard cached mappings.
+- Reuse cached archives only through contained, stable regular-file handles and
+  matching recorded length/SHA256. Unsafe, missing or changed 304 caches permit
+  one unconditional download; operational read/write failures must abort.
+  Do not add a redundant gzip-validation scan. Preserve uncertain historical
+  paths and activation provenance for cleanup retries outside retention slots.
 - Resolve every active pointer through shared identifier and containment checks,
   including bridge writers. Reject traversal, Windows filename aliases/reserved
   names, and links escaping the snapshot boundary before database access.

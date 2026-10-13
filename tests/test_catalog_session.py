@@ -400,6 +400,14 @@ async def test_open_catalog_resolves_snapshot_while_holding_promotion_lock(
     promoted_id = "promoted-snapshot"
     promoted_snapshot = paths.snapshots_dir / promoted_id
     shutil.copytree(old_snapshot, promoted_snapshot)
+    connection = sqlite3.connect(paths.database_for(promoted_id))
+    try:
+        connection.execute(
+            "UPDATE snapshot_meta SET value=? WHERE key='snapshot_id'", (promoted_id,)
+        )
+        connection.commit()
+    finally:
+        connection.close()
     acquired: list[bool] = []
 
     class PromotingLock:
