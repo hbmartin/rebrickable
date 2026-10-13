@@ -45,7 +45,11 @@ before interpreter shutdown; the returned status cannot prevent a later Python
 flush error from overriding the process exit status. Use either executable
 form for standalone execution. Diagnostic encoding failures do not suppress
 encodable stdout when both roles share a stream. A Windows EINVAL is treated as a pipe interruption
-only when the stream's descriptor identifies a pipe.
+only when the stream's descriptor identifies a pipe. Diagnostic-only failures
+preserve the command status even with aliased stdout/stderr. Shared streams
+are finalized once; a new shared flush failure counts as a stdout failure only
+when the invocation produced stdout. Each operational stdout failure is
+reported once.
 
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
 part-count, category, material, limit, and offset filters. `catalog doctor`

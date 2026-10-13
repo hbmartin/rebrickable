@@ -26,12 +26,15 @@ from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import (
     CatalogPaths,
+    _copy_source_failure,
     _inspect_catalog,
     _read_active_pointer,
     _read_only_uri,
     _read_pointer,
+    _resolve_catalog_path,
     _safe_snapshot_id,
     _snapshot_contained,
+    _structural_path_error,
     _VerificationStatus,
     _verify_database,
 )
@@ -137,9 +140,79 @@ async def _download_one(
         raise DownloadError(f"unable to download {url}: {exc}") from exc
 
 
+def _reuse_archive(
+    paths: CatalogPaths,
+    snapshot_id: str,
+    filename: str,
+    destination: Path,
+    previous: FileFingerprint,
+) -> bool:
+    """Copy verified archive bytes from one stable, contained regular file."""
+    source = paths.snapshots_dir / snapshot_id / filename
+
+    def identity() -> tuple[Path, os.stat_result] | None:
+        root = _resolve_catalog_path(paths.snapshots_dir)
+        snapshot = _resolve_catalog_path(paths.snapshots_dir / snapshot_id)
+        resolved = _resolve_catalog_path(source)
+        if snapshot.parent != root or not resolved.is_relative_to(snapshot):
+            return None
+        metadata = resolved.stat()
+        return (resolved, metadata) if stat.S_ISREG(metadata.st_mode) else None
+
+    try:
+        approved = identity()
+        if approved is None:
+            return False
+        resolved, metadata = approved
+        descriptor = os.open(
+            resolved,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        if _structural_path_error(exc):
+            return False
+        raise
+    try:
+        handle = os.fdopen(descriptor, "rb")
+    except BaseException:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise
+    with handle:
+        opened = os.fstat(handle.fileno())
+
+        def same_file(candidate: os.stat_result) -> bool:
+            return stat.S_ISREG(candidate.st_mode) and (
+                candidate.st_dev,
+                candidate.st_ino,
+            ) == (opened.st_dev, opened.st_ino)
+
+        try:
+            checked = identity()
+        except OSError as exc:
+            if _structural_path_error(exc):
+                return False
+            raise
+        if (
+            not same_file(metadata)
+            or checked is None
+            or not same_file(checked[1])
+            or checked[0] != resolved
+        ):
+            return False
+        digest = hashlib.sha256()
+        length = 0
+        with destination.open("wb") as output:
+            while block := handle.read(65_536):
+                output.write(block)
+                digest.update(block)
+                length += len(block)
+        return length == previous.byte_length and digest.hexdigest() == previous.sha256
+
+
 def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
     """Copy cached mappings, recovering only from a confirmed unreadable source."""
-    recovered = False
+    retried = False
     while True:
         attached = False
         try:
@@ -159,27 +232,13 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
             except sqlite3.Error:
                 raise exc from None
             code = getattr(exc, "sqlite_errorcode", 0)
-            source_failure = code & 0xFF in {
-                sqlite3.SQLITE_CORRUPT,
-                sqlite3.SQLITE_NOTADB,
-                sqlite3.SQLITE_CANTOPEN,
-            } or code in {
-                sqlite3.SQLITE_READONLY_ROLLBACK,
-                sqlite3.SQLITE_IOERR_READ,
-                sqlite3.SQLITE_IOERR_SHORT_READ,
-                sqlite3.SQLITE_IOERR_FSTAT,
-                sqlite3.SQLITE_IOERR_CORRUPTFS,
-                sqlite3.SQLITE_IOERR_DATA,
-            }
-            if not source_failure:
+            if not _copy_source_failure(exc):
                 raise
             verification = _verify_database(previous)
-            if (
-                verification.status is _VerificationStatus.RECOVERY_REQUIRED
-                and not recovered
-            ):
-                recovered = True
-                verification = _verify_database(previous, recover_hot_journal=True)
+            if code == sqlite3.SQLITE_READONLY_ROLLBACK and not retried:
+                retried = True
+                if verification.status is _VerificationStatus.RECOVERY_REQUIRED:
+                    verification = _verify_database(previous, recover_hot_journal=True)
                 if verification.status is _VerificationStatus.HEALTHY:
                     continue
             if verification.status in {
@@ -197,8 +256,10 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
 
 
 def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
-    connection = sqlite3.connect(candidate, uri=True)
+    connection = None
+    failed = False
     try:
+        connection = sqlite3.connect(candidate, uri=True)
         skipped_cache = previous is not None and _copy_crosswalk(connection, previous)
         connection.execute(
             "DELETE FROM api_crosswalk_cache WHERE entity_kind='part' "
@@ -229,14 +290,35 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
         )
         connection.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')")
         connection.commit()
-    except sqlite3.Error as exc:
+    except (OSError, sqlite3.Error) as exc:
+        failed = True
         raise CatalogImportError(f"unable to carry mapping cache: {exc}") from exc
     finally:
-        connection.close()
+        if connection is not None:
+            if failed:
+                with suppress(OSError, sqlite3.Error):
+                    connection.close()
+            else:
+                try:
+                    connection.close()
+                except (OSError, sqlite3.Error) as exc:
+                    raise CatalogImportError(
+                        f"unable to close mapping cache: {exc}"
+                    ) from exc
     return skipped_cache
 
 
 _ACTIVATION_MARKER = ".rebrickable-activation.json"
+
+
+def _history_present(paths: CatalogPaths, snapshot_id: str) -> bool:
+    try:
+        (paths.snapshots_dir / snapshot_id).lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # Preserve uncertain provenance for a later cleanup retry.
+    return True
 
 
 def _activation_history(pointer: _ActivePointer) -> tuple[str, tuple[str, ...]]:
@@ -292,19 +374,23 @@ def _prune_snapshots(
         except (OSError, RuntimeError):
             return False  # Uncertain cleanup targets are protected for a retry.
 
+    existing = set()
+    for child in children:
+        try:
+            if child.is_dir() and contained(child.name):
+                existing.add(child.name)
+        except OSError:
+            continue
     keep = {active_id}
-    if retain > 1 and previous_id is not None:
+    if retain > 1 and previous_id in existing:
         keep.add(previous_id)
-    existing = {
-        child.name for child in children if child.is_dir() and contained(child.name)
-    }
     for snapshot_id in history:
         if len(keep) >= retain:
             break
         if snapshot_id in existing:
             keep.add(snapshot_id)
     for child in children:
-        if not child.is_dir() or child.name in keep or not contained(child.name):
+        if child.name not in existing or child.name in keep:
             continue
         if (
             not child.name.startswith(".incoming-")
@@ -337,7 +423,9 @@ def _promote_snapshot(
                 present = stat.S_ISDIR(
                     (paths.snapshots_dir / previous_id).stat().st_mode
                 )
-            except FileNotFoundError:
+            except OSError as exc:
+                if not _structural_path_error(exc):
+                    raise
                 present = False
             if not present:
                 previous_id = None
@@ -347,12 +435,9 @@ def _promote_snapshot(
                 (
                     destination.name,
                     *((previous_id,) if previous_id is not None else ()),
-                    *(
-                        item
-                        for item in prior_history
-                        if (paths.snapshots_dir / item).is_dir()
-                        and _snapshot_contained(paths, item)
-                    ),
+                    # Keep proven activation identities even when containment
+                    # is uncertain or an earlier deletion failed.
+                    *(item for item in prior_history if _history_present(paths, item)),
                 )
             )
         )
@@ -457,21 +542,36 @@ async def _refresh_attempt(
                 force=force,
                 callback=callback,
             )
-            changed[name] = was_changed
-            metadata[name] = item
             if not was_changed:
                 if prior_state.snapshot_id is None:
                     raise DownloadError(
                         f"{filename} returned 304 without an active snapshot"
                     )
-                source = paths.snapshots_dir / prior_state.snapshot_id / filename
                 try:
-                    await run_in_thread(shutil.copy2, source, file_paths[name])
+                    reused = await run_in_thread(
+                        _reuse_archive,
+                        paths,
+                        prior_state.snapshot_id,
+                        filename,
+                        file_paths[name],
+                        prior_by_name[name],
+                    )
                 except OSError as exc:
                     raise DownloadError(
                         f"unable to reuse cached {filename} from snapshot "
                         f"{prior_state.snapshot_id}: {exc}"
                     ) from exc
+                if not reused:
+                    was_changed, item = await _download_one(
+                        client,
+                        url=url,
+                        destination=file_paths[name],
+                        previous=None,
+                        force=True,
+                        callback=callback,
+                    )
+            changed[name] = was_changed
+            metadata[name] = item
 
     try:
         config.cache_path.mkdir(parents=True, exist_ok=True)

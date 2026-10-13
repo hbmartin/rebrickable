@@ -2,6 +2,109 @@
 
 SCHEMA_VERSION = 1
 
+# Existing catalog columns required by the version-1 query and refresh contracts.
+_REQUIRED_COLUMNS = {
+    "snapshot_meta": ("table", frozenset({"key", "value"})),
+    "themes": ("table", frozenset({"id", "name", "parent_id"})),
+    "colors": (
+        "table",
+        frozenset(
+            {
+                "id",
+                "name",
+                "rgb",
+                "is_trans",
+                "num_parts",
+                "num_sets",
+                "year_from",
+                "year_to",
+            }
+        ),
+    ),
+    "part_categories": ("table", frozenset({"id", "name"})),
+    "parts": ("table", frozenset({"part_num", "name", "part_cat_id", "material"})),
+    "part_relationships": (
+        "table",
+        frozenset({"rel_type", "child_part_num", "parent_part_num"}),
+    ),
+    "elements": (
+        "table",
+        frozenset({"element_id", "part_num", "color_id", "design_id"}),
+    ),
+    "sets": (
+        "table",
+        frozenset({"set_num", "name", "year", "theme_id", "num_parts", "image_url"}),
+    ),
+    "minifigs": ("table", frozenset({"fig_num", "name", "num_parts", "image_url"})),
+    "inventories": ("table", frozenset({"id", "version", "owner_num"})),
+    "inventory_parts": (
+        "table",
+        frozenset(
+            {
+                "inventory_id",
+                "part_num",
+                "color_id",
+                "quantity",
+                "is_spare",
+                "image_url",
+            }
+        ),
+    ),
+    "inventory_sets": ("table", frozenset({"inventory_id", "set_num", "quantity"})),
+    "inventory_minifigs": ("table", frozenset({"inventory_id", "fig_num", "quantity"})),
+    "api_crosswalk_cache": (
+        "table",
+        frozenset(
+            {
+                "entity_kind",
+                "external_system",
+                "external_id",
+                "canonical_id",
+                "operation_id",
+                "retrieved_at",
+                "response_sha256",
+            }
+        ),
+    ),
+    "user_mapping_overrides": (
+        "table",
+        frozenset(
+            {
+                "entity_kind",
+                "source_system",
+                "source_id",
+                "target_system",
+                "target_id",
+                "reason",
+            }
+        ),
+    ),
+    "search_documents": (
+        "table",
+        frozenset(
+            {
+                "rowid",
+                "kind",
+                "canonical_id",
+                "title",
+                "subtitle",
+                "external_ids",
+                "normalized_name",
+                "year",
+                "theme_id",
+                "num_parts",
+                "category_id",
+                "material",
+            }
+        ),
+    ),
+    "search_fts": (
+        "table",
+        frozenset({"canonical_id", "title", "subtitle", "external_ids"}),
+    ),
+    "latest_inventories": ("view", frozenset({"id", "version", "owner_num"})),
+}
+
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE snapshot_meta (

@@ -356,6 +356,10 @@ commands. Embedded `cli.main()` calls leave every host stream open and never
 redirect it; the host must handle failed borrowed streams before shutdown.
 The returned status does not prevent a later interpreter flush error. Use the
 installed CLI or module execution for standalone scripts.
+Diagnostic-only failures retain that status with aliased streams too. Shared
+streams are finalized once; a newly observed shared flush failure counts as
+stdout failure only after stdout output. Operational stdout errors are reported
+once.
 
 Private activation history now determines snapshot retention. Existing pointers
 and version-1 databases/manifests remain readable. Uncertain legacy directories
@@ -369,6 +373,16 @@ mappings. Other catalog reads stay read-only. Operational access or storage
 failures abort refresh rather than discarding a potentially healthy cache.
 All pointer readers reject unsafe names and paths escaping the snapshot
 boundary; ordinary safe legacy snapshot identifiers remain supported.
+Structural path failures and incomplete or mismatched version-1 schemas permit
+a validated replacement. Hot-journal diagnostics explain the explicit-refresh
+recovery option. Uncertain historical paths keep their activation provenance
+for cleanup retries and do not consume available retention slots.
+
+Cached `304` archives now require contained regular-file identity and matching
+recorded length/SHA256. Unsafe, missing or changed files trigger one
+unconditional download; another `304` fails. Permission, resource or storage
+failures abort refresh instead. Archive bytes remain raw, with normal header
+and import validation.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.

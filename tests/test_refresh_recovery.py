@@ -66,8 +66,9 @@ async def test_nonready_legacy_activation_ages_out(
         assert (await catalog_state(config, verify=True)).status is CatalogStatus.READY
 
 
+@pytest.mark.parametrize("damage", ["corrupt", "empty", "missing-table"])
 async def test_corruption_during_refresh_recovers_and_reports_skipped_cache(
-    catalog_config, monkeypatch
+    catalog_config, monkeypatch, damage
 ) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     original = module._inspect_catalog
@@ -78,9 +79,15 @@ async def test_corruption_during_refresh_recovers_and_reports_skipped_cache(
         config, pointer, *, verify=False
     ) -> CatalogState:
         if not verify:
-            paths.database_for("fixture-snapshot").write_bytes(
-                b"corrupted after verification"
-            )
+            database = paths.database_for("fixture-snapshot")
+            if damage == "missing-table":
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("DROP TABLE api_crosswalk_cache")
+                    connection.commit()
+            else:
+                database.write_bytes(
+                    b"" if damage == "empty" else b"corrupted after verification"
+                )
         return await original(config, pointer, verify=verify)
 
     monkeypatch.setattr(module, "_inspect_catalog", corrupt_before_promotion)

@@ -127,6 +127,10 @@ status already selected. Closed stderr drops further diagnostics. Other
 command-output failures, including encoding errors, return `1`; encoding
 failures preserve previously buffered output. Help/version retain `0` and usage
 errors retain `2` despite output failures.
+Failed diagnostics preserve the command status even when stderr shares stdout.
+Shared streams are finalized once; a new flush failure affects the status only
+when the command produced stdout on that stream. Operational stdout failures
+are reported once.
 
 Embedded `cli.main()` calls return a status and leave host streams open without
 redirecting descriptors. The host owns shutdown cleanup for failed borrowed

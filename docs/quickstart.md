@@ -64,7 +64,20 @@ promotion lock before copying cached mappings. Ordinary catalog reads remain
 read-only. Temporary access failures, resource exhaustion, and storage errors
 abort refresh and preserve the active pointer and mappings; they are not proof
 of catalog corruption.
+Structural snapshot damage, including missing files, nonregular contents and
+symlink loops, permits replacement. Verification checks the required version-1
+schema and snapshot identity as well as SQLite integrity. A hot-journal
+diagnostic recommends explicit refresh; ordinary reads never repair it.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed
 orphans are removed once the pointer confirms they are inactive.
+Uncertain historical paths keep their activation provenance for later cleanup
+retries without occupying an available retention slot.
+
+When a download server returns `304`, refresh checks that the cached archive is
+a stable regular file contained within its snapshot and matches its recorded
+byte length and SHA256. Contained links are supported. Missing, unsafe or changed
+archives trigger one fresh request without conditional headers. Operational
+source-read or staging-write failures abort refresh. Reused archives follow the
+normal header and import validation; no additional gzip scan is performed.

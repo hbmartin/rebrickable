@@ -413,3 +413,65 @@ def test_repeated_encoding_failure_does_not_neutralize_stream(monkeypatch) -> No
     silence.assert_not_called()
     assert buffer.getvalue() == b"preserved buffer\n"
     stream.detach()
+
+
+@pytest.mark.parametrize("status", range(6))
+@pytest.mark.parametrize("stdout_first", [False, True])
+def test_aliased_diagnostic_only_failure_preserves_status(
+    monkeypatch, status, stdout_first
+) -> None:
+    stream = Mock(spec=io.StringIO, closed=False)
+    stream.write.side_effect = ([None] if stdout_first else []) + [
+        OSError(errno.ENOSPC, "diagnostics full")
+    ]
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stream))
+
+    async def run(_args) -> int:
+        if stdout_first:
+            cli._write_stdout("result", status=status)
+        cli._write_stderr("diagnostic")
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == status
+    stream.flush.assert_not_called()
+    stream.close.assert_not_called()
+
+
+@pytest.mark.parametrize("stdout_used", [False, True])
+@pytest.mark.parametrize("status", range(6))
+def test_shared_finalization_runs_once_and_attributes_new_failure(
+    monkeypatch, stdout_used, status
+) -> None:
+    stream = Mock(spec=io.StringIO, closed=False)
+    stream.flush.side_effect = OSError(errno.ENOSPC, "flush full")
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stream, stderr=stream))
+
+    async def run(_args) -> int:
+        if stdout_used:
+            cli._write_stdout("result", status=status)
+        cli._write_stderr("diagnostic")
+        return status
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == (1 if stdout_used else status)
+    stream.flush.assert_called_once()
+    stream.close.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["write", "flush"])
+def test_stdout_operational_failure_is_reported_once(monkeypatch, stage) -> None:
+    stdout = Mock(spec=io.StringIO, closed=False)
+    getattr(stdout, stage).side_effect = OSError(errno.ENOSPC, "one output failure")
+    stderr = io.StringIO()
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stdout, stderr=stderr))
+
+    async def run(_args) -> int:
+        cli._write_stdout("result", status=4)
+        return 4
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == 1
+    assert stderr.getvalue().count("one output failure") == 1
+    if stage == "write":
+        stdout.flush.assert_not_called()
