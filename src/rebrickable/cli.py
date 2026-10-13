@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import sqlite3
+import stat
 import sys
 from contextlib import suppress
 from contextvars import ContextVar
@@ -64,32 +65,41 @@ class _StdoutPipeClosedError(Exception):
 @dataclass(slots=True, kw_only=True)
 class _OutputState:
     failed: list[IO[str]] = field(default_factory=list)
+    write_failed: list[IO[str]] = field(default_factory=list)
+    owned: tuple[tuple[IO[str], int], ...] = ()
 
 
 _output_state: ContextVar[_OutputState | None] = ContextVar("cli_output", default=None)
 
 
-def _stream_failed(stream: IO[str]) -> bool:
+def _stream_failed(stream: IO[str], *, writing: bool = False) -> bool:
     state = _output_state.get()
-    return state is not None and any(stream is item for item in state.failed)
+    return state is not None and any(
+        stream is item
+        for item in (*state.failed, *(state.write_failed if writing else ()))
+    )
 
 
-def _is_broken_pipe(error: OSError) -> bool:
-    return (
+def _is_broken_pipe(error: OSError, stream: IO[str]) -> bool:
+    if (
         isinstance(error, BrokenPipeError)
         or error.errno == errno.EPIPE
         or getattr(error, "winerror", None) in {109, 232, 233}
-    )
+    ):
+        return True
+    if os.name == "nt" and error.errno == errno.EINVAL:
+        with suppress(AttributeError, OSError, ValueError):
+            return stat.S_ISFIFO(os.fstat(stream.fileno()).st_mode)
+    return False
 
 
 def _silence_stream(stream: IO[str]) -> None:
     """Prevent a failed stream from flushing again during interpreter shutdown."""
+    state = _output_state.get()
+    if state is None:
+        return
     expected = next(
-        (
-            descriptor
-            for name, descriptor in (("__stdout__", 1), ("__stderr__", 2))
-            if stream is getattr(sys, name, None)
-        ),
+        (descriptor for original, descriptor in state.owned if stream is original),
         None,
     )
     if expected is None:
@@ -113,11 +123,12 @@ def _silence_stream(stream: IO[str]) -> None:
                 getattr(stream.buffer, "raw", stream.buffer).close()
 
 
-def _fail_stream(stream: IO[str]) -> None:
+def _fail_stream(stream: IO[str], *, unusable: bool = True) -> None:
     state = _output_state.get()
     if state is not None:
-        state.failed.append(stream)
-    _silence_stream(stream)
+        (state.failed if unusable else state.write_failed).append(stream)
+    if unusable:
+        _silence_stream(stream)
 
 
 def _write_stdout(value: str | bytes, *, status: int = ExitCode.OK) -> None:
@@ -125,16 +136,17 @@ def _write_stdout(value: str | bytes, *, status: int = ExitCode.OK) -> None:
     if stream is None:
         raise _StdoutPipeClosedError(status)
     try:
-        if stream.closed or _stream_failed(stream):
+        if stream.closed or _stream_failed(stream, writing=True):
             raise _StdoutPipeClosedError(status)
         if isinstance(value, bytes):
             stream.buffer.write(value)
         else:
             stream.write(value)
     except (AttributeError, OSError, ValueError) as exc:
-        _fail_stream(stream)
+        pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
+        _fail_stream(stream, unusable=not isinstance(exc, UnicodeError))
         if isinstance(exc, OSError):
-            if _is_broken_pipe(exc):
+            if pipe_closed:
                 raise _StdoutPipeClosedError(status) from None
             raise
         raise OSError(f"unable to write stdout: {exc}") from exc
@@ -149,11 +161,11 @@ def _write_stderr(message: str) -> None:
     if stream is None:
         return
     try:
-        if stream.closed or _stream_failed(stream):
+        if stream.closed or _stream_failed(stream, writing=True):
             return
         stream.write(message)
-    except (AttributeError, OSError, ValueError):
-        _fail_stream(stream)
+    except (AttributeError, OSError, ValueError) as exc:
+        _fail_stream(stream, unusable=not isinstance(exc, UnicodeError))
 
 
 def _print_stderr(message: str) -> None:
@@ -170,8 +182,9 @@ def _flush_stream(
             return None
         stream.flush()
     except (AttributeError, OSError, ValueError) as exc:
-        _fail_stream(stream)
-        if not isinstance(exc, OSError) or not _is_broken_pipe(exc):
+        pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
+        _fail_stream(stream, unusable=not isinstance(exc, UnicodeError))
+        if not pipe_closed:
             return exc
     return None
 
@@ -190,7 +203,7 @@ class _ArgumentParser(argparse.ArgumentParser):
     @override
     def _print_message(self, message: str, file: _MessageWriter | None = None) -> None:
         if message:
-            with suppress(AttributeError, OSError, _StdoutPipeClosedError):
+            with suppress(AttributeError, OSError, ValueError, _StdoutPipeClosedError):
                 if file is sys.stdout:
                     _write_stdout(message)
                 elif file is None or file is sys.stderr:
@@ -658,7 +671,22 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    token = _output_state.set(_OutputState())
+    """Run the CLI without taking ownership of the host's output streams."""
+    return _main(argv, owned=())
+
+
+def _entrypoint(argv: list[str] | None = None) -> int:
+    """Run as an executable, owning only the original process output streams."""
+    owned = tuple(
+        (stream, descriptor)
+        for name, descriptor in (("__stdout__", 1), ("__stderr__", 2))
+        if (stream := getattr(sys, name, None)) is not None
+    )
+    return _main(argv, owned=owned)
+
+
+def _main(argv: list[str] | None, *, owned: tuple[tuple[IO[str], int], ...]) -> int:
+    token = _output_state.set(_OutputState(owned=owned))
     status = int(ExitCode.OK)
     parser_exit: SystemExit | None = None
     try:
@@ -700,4 +728,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    raise SystemExit(_entrypoint())

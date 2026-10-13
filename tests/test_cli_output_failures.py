@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import io
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -60,7 +61,7 @@ elif command.startswith('ldraw'):
     if command == 'ldraw-csv': argv.append('--csv')
 elif command == 'status': argv = ['--format', 'json', 'status']
 else: argv = ['--format', 'json', 'catalog', command]
-raise SystemExit(cli.main(argv))
+raise SystemExit(cli._entrypoint(argv))
 """
     result = closed_pipe(code, stream="stdout", unbuffered=unbuffered)
     expected = 3 if command in {"status", "path"} else 2 if command == "doctor" else 4
@@ -115,7 +116,12 @@ def test_parser_output_errors_preserve_system_exit(
 
 
 @pytest.mark.parametrize(
-    "error", [AttributeError("write unavailable"), OSError(errno.EINVAL, "bad stream")]
+    "error",
+    [
+        AttributeError("write unavailable"),
+        OSError(errno.EINVAL, "bad stream"),
+        ValueError("closed"),
+    ],
 )
 def test_parser_ignores_explicit_message_stream_errors(error) -> None:
     stream = Mock()
@@ -206,7 +212,11 @@ def test_original_stream_with_unexpected_descriptor_remains_untouched(
     stream = Mock(spec=io.TextIOWrapper, closed=False)
     stream.fileno.return_value = 42
     monkeypatch.setattr(cli, "sys", SimpleNamespace(__stdout__=stream))
-    cli._silence_stream(stream)
+    token = cli._output_state.set(cli._OutputState(owned=((stream, 1),)))
+    try:
+        cli._silence_stream(stream)
+    finally:
+        cli._output_state.reset(token)
     stream.buffer.close.assert_not_called()
     stream.close.assert_not_called()
 
@@ -223,7 +233,7 @@ def test_real_full_device(argv, status, unbuffered) -> None:
                 sys.executable,
                 *(["-u"] if unbuffered else []),
                 "-c",
-                STARTUP + f"raise SystemExit(cli.main({argv!r}))",
+                STARTUP + f"raise SystemExit(cli._entrypoint({argv!r}))",
             ],
             stdout=full,
             stderr=subprocess.PIPE,
@@ -232,3 +242,93 @@ def test_real_full_device(argv, status, unbuffered) -> None:
         )
     assert result.returncode == status
     assert b"Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("executable", [False, True])
+def test_encoding_failure_preserves_buffer_and_host_output(executable) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            STARTUP
+            + f"""
+sys.stdout.reconfigure(encoding='ascii')
+async def run(args):
+    cli._write_stdout('buffered before error\\n')
+    cli._write_stdout('\\u00e9\\n')
+    return 0
+cli._run = run
+status = cli.{"_entrypoint" if executable else "main"}(['url', 'part', '3001'])
+assert status == 1
+print('host output after return')
+""",
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == b"buffered before error\nhost output after return\n"
+    assert b"unable to write stdout" in result.stderr
+    assert b"Traceback" not in result.stderr
+
+
+def test_embedded_original_streams_never_redirect_or_close(monkeypatch) -> None:
+    stdout = Mock(spec=io.TextIOWrapper, closed=False)
+    stdout.write.side_effect = OSError(errno.ENOSPC, "full")
+    stderr = io.StringIO()
+    monkeypatch.setattr(
+        cli, "sys", SimpleNamespace(stdout=stdout, __stdout__=stdout, stderr=stderr)
+    )
+    assert cli.main(["url", "part", "3001"]) == 1
+    assert cli._output_state.get() is None
+    stdout.close.assert_not_called()
+    stdout.fileno.assert_not_called()
+    assert "full" in stderr.getvalue()
+
+
+@pytest.mark.parametrize("descriptor_kind", ["pipe", "file", "unknown"])
+def test_windows_errno_only_einval_uses_descriptor_type(
+    monkeypatch, descriptor_kind
+) -> None:
+    stream = Mock(spec=io.TextIOWrapper, closed=False)
+    stream.fileno.return_value = 1
+    stream.write.side_effect = OSError(errno.EINVAL, "closed")
+    fstat = Mock(
+        return_value=SimpleNamespace(
+            st_mode=stat.S_IFIFO if descriptor_kind == "pipe" else stat.S_IFREG
+        )
+    )
+    if descriptor_kind == "unknown":
+        fstat.side_effect = OSError(errno.EBADF, "unavailable")
+    monkeypatch.setattr(cli, "os", SimpleNamespace(name="nt", fstat=fstat))
+    monkeypatch.setattr(
+        cli, "sys", SimpleNamespace(stdout=stream, stderr=io.StringIO())
+    )
+
+    async def run(_args) -> int:
+        cli._write_stdout("result", status=4)
+        return 4
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == (4 if descriptor_kind == "pipe" else 1)
+
+
+def test_encoding_failure_on_stderr_still_flushes_buffer(monkeypatch) -> None:
+    buffer = io.BytesIO()
+    stderr = io.TextIOWrapper(buffer, encoding="ascii")
+    stdout = io.StringIO()
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stdout, stderr=stderr))
+
+    async def run(_args) -> int:
+        cli._write_stderr("buffered diagnostic\n")
+        cli._write_stderr("\u00e9")
+        cli._write_stderr("suppressed diagnostic")
+        cli._write_stdout("healthy output")
+        return 5
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["url", "part", "3001"]) == 5
+    assert buffer.getvalue() == b"buffered diagnostic\n"
+    assert stdout.getvalue() == "healthy output"
+    stderr.detach()

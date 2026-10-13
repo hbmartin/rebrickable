@@ -147,6 +147,13 @@ Use global `--format table|json|csv|yaml`; legacy per-command `--json` and BOM o
 translation `--csv` flags remain supported. `search` exposes all catalog
 filters, including recursive subtheme matching and offsets.
 
+An interrupted stdout pipe preserves a command status selected before output,
+otherwise exiting quietly with `0`. Other command-output failures, including
+encoding errors, return `1`; encoding failures preserve previously buffered
+output. Help/version and usage retain their parser statuses. Embedded calls to
+`cli.main()` leave all host streams open and never redirect their descriptors.
+The installed executable handles failed original streams at process shutdown.
+
 ## Live API v3
 
 Live calls are deliberately separate from the catalog and always take an

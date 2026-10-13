@@ -42,11 +42,24 @@ def test_csv_iteration_wraps_late_errors(tmp_path: Path, kind: str) -> None:
     assert inspect_header(path, definition) == ()
     rows = _rows(path, definition)
     assert next(rows) == (1, "Bricks")
-    with pytest.raises(
-        DatasetSchemaError, match=r"part_categories.csv.gz:\d+:"
-    ) as error:
-        list(rows)
+    consumed = 1
+    expected = (
+        r"part_categories.csv.gz: unable to decode CSV while reading after line \d+:"
+        if kind == "unicode"
+        else r"part_categories.csv.gz:\d+:"
+    )
+
+    def consume() -> None:
+        nonlocal consumed
+        for _row in rows:
+            consumed += 1
+
+    with pytest.raises(DatasetSchemaError, match=expected) as error:
+        consume()
     assert isinstance(error.value.__cause__, cause)
+    if kind == "unicode":
+        assert f"after line {consumed + 1}:" in str(error.value)
+        assert "after line 6001:" not in str(error.value)
 
 
 @pytest.mark.parametrize("kind", ["unicode", "csv"])

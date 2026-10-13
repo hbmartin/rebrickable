@@ -33,10 +33,15 @@ with `0`, unless the command has already computed a nonzero status. This also
 applies to help and version output. A closed stderr drops further progress and
 diagnostics without interrupting the command or discarding healthy stdout.
 Usage errors retain status `2`, even when their diagnostics cannot be delivered.
-Other errors writing or flushing command output, such as a full disk, return
+Other errors writing or flushing command output, such as a full disk or an
+encoding failure, return
 `1` regardless of the selected command status. Help and version retain their
-parser status `0` when output fails. In-process calls do not close or redirect
-caller-provided output streams.
+parser status `0` when output fails. Encoding failures preserve and flush
+previously encoded output. Embedded calls to `cli.main()` never close or
+redirect any host stream, including the original stdout/stderr. The installed
+executable and `python -m rebrickable.cli` handle shutdown cleanup for failed
+original process streams. A Windows EINVAL is treated as a pipe interruption
+only when the stream's descriptor identifies a pipe.
 
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),
 part-count, category, material, limit, and offset filters. `catalog doctor`

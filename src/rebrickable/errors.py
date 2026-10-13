@@ -154,7 +154,7 @@ class ApiDecodeError(ApiError):
         return (
             _rebuild_api_decode_error,
             (self.path_template, self.operation_id, self.detail),
-            {"__notes__": list(self.__notes__)} if hasattr(self, "__notes__") else {},
+            {"__notes__": self.__notes__} if hasattr(self, "__notes__") else {},
         )
 
 

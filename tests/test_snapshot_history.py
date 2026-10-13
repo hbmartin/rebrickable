@@ -13,7 +13,11 @@ import pytest
 
 from rebrickable import CatalogState, Config
 from rebrickable import refresh as module
-from rebrickable.catalog.database import CatalogPaths
+from rebrickable.catalog.database import (
+    CatalogPaths,
+    _ActivePointer,
+    _read_active_pointer,
+)
 from rebrickable.refresh import (
     _ACTIVATION_MARKER,
     _activation_history,
@@ -124,17 +128,18 @@ def test_invalid_history_bootstraps_only_confirmed_active(
 ) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     paths.active_pointer.write_text(json.dumps(payload))
-    generation, history = _activation_history(paths, "fixture-snapshot")
+    pointer = _read_active_pointer(paths)
+    generation, history = _activation_history(pointer)
     assert uuid.UUID(generation)
-    assert history == ("fixture-snapshot",)
+    assert history == ((pointer.snapshot_id,) if pointer.snapshot_id else ())
 
 
-def test_history_missing_and_mismatched_current_are_conservative(
+def test_missing_history_bootstraps_from_the_parsed_pointer(
     catalog_config: Config,
 ) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     paths.active_pointer.unlink()
-    assert _activation_history(paths, None)[1] == ()
+    assert _activation_history(_read_active_pointer(paths))[1] == ()
     _atomic_json(
         paths.active_pointer,
         {
@@ -143,7 +148,7 @@ def test_history_missing_and_mismatched_current_are_conservative(
             "_activation_history": ["fixture-snapshot"],
         },
     )
-    assert _activation_history(paths, "different")[1] == ("different",)
+    assert _activation_history(_read_active_pointer(paths))[1] == ("fixture-snapshot",)
 
 
 def test_prune_retries_failed_history_and_protects_changed_pointer(
@@ -190,7 +195,9 @@ def test_markers_and_missing_snapshot_directory(
 async def test_promotion_verifies_only_changed_active_snapshot(
     catalog_config: Config, monkeypatch: pytest.MonkeyPatch, *, changed: bool
 ) -> None:
-    original = module.catalog_state
+    original = module._catalog_state
+    original_initial = module.catalog_state
+    original_pointer = module._read_active_pointer
     calls = []
     sources = snapshot_sources(catalog_config)
     paths = CatalogPaths.from_config(catalog_config)
@@ -200,13 +207,22 @@ async def test_promotion_verifies_only_changed_active_snapshot(
             paths.snapshots_dir / "replacement",
         )
 
-    async def counted(config: Config, *, verify: bool = False) -> CatalogState:
+    async def initial(config, *, verify=False) -> CatalogState:
         calls.append(verify)
-        if len(calls) == 2 and changed:
-            _atomic_json(paths.active_pointer, {"snapshot_id": "replacement"})
-        return await original(config, verify=verify)
+        return await original_initial(config, verify=verify)
 
-    monkeypatch.setattr(module, "catalog_state", counted)
+    def pointer(paths) -> _ActivePointer:
+        if changed:
+            _atomic_json(paths.active_pointer, {"snapshot_id": "replacement"})
+        return original_pointer(paths)
+
+    async def counted(config, pointer, *, verify=False) -> CatalogState:
+        calls.append(verify)
+        return await original(config, pointer, verify=verify)
+
+    monkeypatch.setattr(module, "catalog_state", initial)
+    monkeypatch.setattr(module, "_catalog_state", counted)
+    monkeypatch.setattr(module, "_read_active_pointer", pointer)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     await refresh_catalog(catalog_config)
     assert calls == ([True, False, True] if changed else [True, False])

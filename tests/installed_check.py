@@ -94,6 +94,55 @@ def check_cli() -> None:
     spec = Path.cwd() / "openapi.json"
     subprocess.run([*cli, "api-spec", "--output", str(spec)], check=True)
     assert json.loads(spec.read_text())["swagger"] == "2.0"
+    for unbuffered in (False, True):
+        for arguments in (
+            ["url", "part", "3001"],
+            ["--help"],
+            ["--version"],
+            ["api-spec"],
+        ):
+            _check_closed_pipe(
+                [*cli, *arguments], stream="stdout", status=0, unbuffered=unbuffered
+            )
+        _check_closed_pipe(
+            [*cli, "unknown-command"], stream="stderr", status=2, unbuffered=unbuffered
+        )
+        for status in (3, 4, 5):
+            code = f"""
+from rebrickable import cli
+async def run(args):
+    cli._write_stdout('result', status={status})
+    return {status}
+cli._run = run
+raise SystemExit(cli._entrypoint(['url', 'part', '3001']))
+"""
+            _check_closed_pipe(
+                [sys.executable, "-c", code],
+                stream="stdout",
+                status=status,
+                unbuffered=unbuffered,
+            )
+
+
+def _check_closed_pipe(
+    command: list[str], *, stream: str, status: int, unbuffered: bool
+) -> None:
+    reader, writer = os.pipe()
+    os.close(reader)
+    try:
+        result = subprocess.run(
+            command,
+            stdout=writer if stream == "stdout" else subprocess.PIPE,
+            stderr=writer if stream == "stderr" else subprocess.PIPE,
+            env={**os.environ, "PYTHONUNBUFFERED": "1" if unbuffered else "0"},
+            timeout=15,
+            check=False,
+        )
+    finally:
+        os.close(writer)
+    assert result.returncode == status, (command, result.stderr)
+    assert result.stdout in (None, b"")
+    assert result.stderr in (None, b"")
 
 
 def _check_offline() -> Path:

@@ -42,7 +42,7 @@ Documentation = "https://hbmartin.github.io/rebrickable/"
 Issues = "https://github.com/hbmartin/rebrickable/issues"
 
 [project.scripts]
-rebrickable = "rebrickable.cli:main"
+rebrickable = "rebrickable.cli:_entrypoint"
 
 [dependency-groups]
 dev = [

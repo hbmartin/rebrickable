@@ -11,11 +11,11 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 from filelock import FileLock, Timeout
@@ -23,7 +23,15 @@ from filelock import FileLock, Timeout
 from rebrickable._atomic import durable_replace
 from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
-from rebrickable.catalog.database import CatalogPaths, _read_pointer, catalog_state
+from rebrickable.catalog.database import (
+    CatalogPaths,
+    _catalog_state,
+    _read_active_pointer,
+    _read_only_uri,
+    _read_pointer,
+    _safe_snapshot_id,
+    catalog_state,
+)
 from rebrickable.catalog.importers import DATASETS, import_catalog, inspect_header
 from rebrickable.catalog.schema import SCHEMA_VERSION
 from rebrickable.config import Config
@@ -44,6 +52,9 @@ from rebrickable.types import (
     RefreshOutcome,
     RefreshReport,
 )
+
+if TYPE_CHECKING:
+    from rebrickable.catalog.database import _ActivePointer
 
 
 def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
@@ -123,14 +134,53 @@ async def _download_one(
         raise DownloadError(f"unable to download {url}: {exc}") from exc
 
 
-def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
-    connection = sqlite3.connect(candidate)
+def _previous_unreadable(previous: Path) -> bool:
     try:
-        if previous is not None and previous.is_file():
-            connection.execute("ATTACH DATABASE ? AS previous", (str(previous),))
-            connection.execute(
-                "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
-            )
+        with closing(sqlite3.connect(_read_only_uri(previous), uri=True)) as connection:
+            row = connection.execute("PRAGMA quick_check").fetchone()
+            return row is None or row[0] != "ok"
+    except (OSError, sqlite3.Error):
+        return True
+
+
+def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
+    """Copy cached mappings, recovering only from a confirmed unreadable source."""
+    attached = False
+    try:
+        connection.execute("ATTACH DATABASE ? AS previous", (_read_only_uri(previous),))
+        attached = True
+        connection.execute(
+            "INSERT OR IGNORE INTO api_crosswalk_cache SELECT * FROM previous.api_crosswalk_cache",
+        )
+    except sqlite3.Error as exc:
+        # Discard any partial INSERT before trying to repair the new catalog.
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            raise exc from None
+        recoverable = getattr(exc, "sqlite_errorcode", None) in {
+            sqlite3.SQLITE_CORRUPT,
+            sqlite3.SQLITE_NOTADB,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_IOERR_READ,
+            sqlite3.SQLITE_IOERR_SHORT_READ,
+            sqlite3.SQLITE_IOERR_FSTAT,
+        }
+        if not recoverable or not _previous_unreadable(previous):
+            raise
+        if attached:
+            try:
+                connection.execute("DETACH DATABASE previous")
+            except sqlite3.Error:
+                raise exc from None
+        return True
+    return False
+
+
+def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
+    connection = sqlite3.connect(candidate, uri=True)
+    try:
+        skipped_cache = previous is not None and _copy_crosswalk(connection, previous)
         connection.execute(
             "DELETE FROM api_crosswalk_cache WHERE entity_kind='part' "
             "AND canonical_id NOT IN (SELECT part_num FROM parts)"
@@ -164,41 +214,29 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> None:
         raise CatalogImportError(f"unable to carry mapping cache: {exc}") from exc
     finally:
         connection.close()
+    return skipped_cache
 
 
 _ACTIVATION_MARKER = ".rebrickable-activation.json"
 
 
-def _activation_history(
-    paths: CatalogPaths, current_id: str | None
-) -> tuple[str, tuple[str, ...]]:
+def _activation_history(pointer: _ActivePointer) -> tuple[str, tuple[str, ...]]:
     """Read proven activation order, or bootstrap conservatively from the pointer."""
     try:
-        pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
-        if not isinstance(pointer, dict):
-            raise TypeError("invalid activation metadata")
-        generation = pointer["_activation_generation"]
-        history = pointer["_activation_history"]
+        generation = pointer.data["_activation_generation"]
+        history = pointer.data["_activation_history"]
         if (
             not isinstance(generation, str)
             or not isinstance(history, list)
             or not history
-            or any(
-                not isinstance(item, str)
-                or not item
-                or item in {".", ".."}
-                or "/" in item
-                or "\\" in item
-                for item in history
-            )
+            or any(not _safe_snapshot_id(item) for item in history)
             or len(set(history)) != len(history)
-            or pointer.get("snapshot_id") != history[0]
-            or (current_id is not None and current_id != history[0])
+            or pointer.snapshot_id != history[0]
         ):
             raise ValueError("invalid activation metadata")
         uuid.UUID(generation)
-    except (OSError, UnicodeError, KeyError, TypeError, ValueError):
-        return uuid.uuid4().hex, (current_id,) if current_id is not None else ()
+    except (KeyError, TypeError, ValueError):
+        return uuid.uuid4().hex, (pointer.snapshot_id,) if pointer.snapshot_id else ()
     return generation, tuple(history)
 
 
@@ -260,11 +298,13 @@ def _promote_snapshot(
     incoming: Path,
     destination: Path,
     previous_id: str | None,
+    pointer: _ActivePointer,
+    crosswalk_source_id: str | None,
     retain: int,
-) -> None:
+) -> bool:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
-        generation, prior_history = _activation_history(paths, previous_id)
+        generation, prior_history = _activation_history(pointer)
         history = tuple(
             dict.fromkeys(
                 (
@@ -278,8 +318,14 @@ def _promote_snapshot(
                 )
             )
         )
-        previous = paths.database_for(previous_id) if previous_id is not None else None
-        _carry_crosswalk(previous, staging / paths.configured_database.name)
+        previous = (
+            paths.database_for(crosswalk_source_id)
+            if crosswalk_source_id is not None
+            else None
+        )
+        skipped_cache = _carry_crosswalk(
+            previous, staging / paths.configured_database.name
+        )
         _atomic_json(staging / _ACTIVATION_MARKER, {"generation": generation})
         shutil.move(staging, incoming)
         durable_replace(incoming, destination)
@@ -307,6 +353,7 @@ def _promote_snapshot(
             with suppress(OSError):
                 shutil.rmtree(destination)
         raise
+    return skipped_cache
 
 
 def _prune_abandoned_staging(cache_path: Path) -> None:
@@ -476,28 +523,44 @@ async def _refresh_attempt(
                 "another process holds the catalog promotion lock"
             ) from exc
         try:
-            current_state = await catalog_state(config)
+            pointer = _read_active_pointer(paths)
+            current_state = await _catalog_state(config, pointer)
             if current_state.status is CatalogStatus.READY and (
                 prior_state.status is not CatalogStatus.READY
                 or current_state.snapshot_id != prior_state.snapshot_id
             ):
-                current_state = await catalog_state(config, verify=True)
+                current_state = await _catalog_state(config, pointer, verify=True)
             previous_id = (
-                current_state.snapshot_id
-                if current_state.status is CatalogStatus.READY
+                pointer.snapshot_id
+                if pointer.snapshot_id
+                and (paths.snapshots_dir / pointer.snapshot_id).is_dir()
                 else None
             )
-            await run_in_thread(
+            skipped_cache = await run_in_thread(
                 _promote_snapshot,
                 paths,
                 staging=staging,
                 incoming=incoming,
                 destination=destination,
                 previous_id=previous_id,
+                pointer=pointer,
+                crosswalk_source_id=(
+                    current_state.snapshot_id
+                    if current_state.status is CatalogStatus.READY
+                    else None
+                ),
                 retain=config.snapshot_retention,
             )
         finally:
             lock.release()
+        if skipped_cache:
+            _emit(
+                callback,
+                ProgressEvent(
+                    stage=ProgressStage.PROMOTE,
+                    message="previous catalog became unreadable; skipped cached API mappings",
+                ),
+            )
         report = RefreshReport(
             outcome=RefreshOutcome.UPDATED,
             snapshot_id=snapshot_id,
