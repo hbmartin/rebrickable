@@ -350,9 +350,18 @@ first, then apply a deliberate corrective mutation.
 
 An interrupted stdout pipe preserves a status selected before output, including
 validation and translation failures. Other command-output failures return `1`.
-Help/version and usage exits preserve their parser statuses. Failed diagnostics
-do not interrupt commands, and in-process CLI calls leave borrowed streams open.
+Encoding failures preserve previously buffered output. Help/version and usage
+exits preserve their parser statuses. Failed diagnostics do not interrupt
+commands. Embedded `cli.main()` calls leave every host stream open and never
+redirect it; executable entry points own process shutdown cleanup.
 
 Private activation history now determines snapshot retention. Existing pointers
 and version-1 databases/manifests remain readable. Uncertain legacy directories
 are preserved outside the retention count; review them before manual deletion.
+A safely identified pointer target participates in retention even when its
+catalog is unreadable. Refresh can repair corruption detected during cache
+carryover by activating the validated replacement without cached API mappings;
+YAML user mappings remain available.
+
+Current releases preserve API exception notes during serialization and copying.
+Loading newly saved exceptions into older releases is not guaranteed.

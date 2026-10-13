@@ -257,7 +257,12 @@ def _rows(path: Path, definition: DatasetDefinition) -> Iterator[tuple[object, .
                     raise DatasetSchemaError(
                         f"{definition.filename}:{line_number}: {exc}",
                     ) from exc
-        except (UnicodeError, csv.Error) as exc:
+        except UnicodeError as exc:
+            raise DatasetSchemaError(
+                f"{definition.filename}: unable to decode CSV while reading after "
+                f"line {reader.line_num}: {exc}"
+            ) from exc
+        except csv.Error as exc:
             raise DatasetSchemaError(
                 f"{definition.filename}:{max(2, reader.line_num + 1)}: {exc}"
             ) from exc
@@ -375,10 +380,6 @@ def import_catalog(
         with suppress(sqlite3.Error, OSError):
             connection.execute("PRAGMA optimize")
             connection.commit()
-    except DatasetSchemaError:
-        with suppress(sqlite3.Error):
-            connection.rollback()
-        raise
     except (sqlite3.Error, OSError, EOFError, zlib.error) as exc:
         if not committed:
             connection.rollback()

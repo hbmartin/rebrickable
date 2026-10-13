@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -55,15 +55,37 @@ def _read_only_uri(database: Path) -> str:
     return "file:" + quote(str(database), safe="/:") + "?mode=ro"
 
 
-def _read_pointer(paths: CatalogPaths) -> str | None:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ActivePointer:
+    snapshot_id: str | None
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+def _safe_snapshot_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in {".", ".."}
+        and not any(character in value for character in ("/", "\\", ":", "\0"))
+    )
+
+
+def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
     try:
         data = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
+        return _ActivePointer(snapshot_id=None)
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return ""
+        return _ActivePointer(snapshot_id="")
     snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else None
-    return snapshot_id if isinstance(snapshot_id, str) else ""
+    return _ActivePointer(
+        snapshot_id=snapshot_id if _safe_snapshot_id(snapshot_id) else "",
+        data=data if isinstance(data, dict) else {},
+    )
+
+
+def _read_pointer(paths: CatalogPaths) -> str | None:
+    return _read_active_pointer(paths).snapshot_id
 
 
 def _fingerprint(item: dict[str, Any]) -> FileFingerprint:
@@ -86,8 +108,16 @@ async def catalog_state(config: Config, *, verify: bool = False) -> CatalogState
     reported READY without opening SQLite; database corruption is detected by
     `open_catalog` (which always verifies) or an explicit `verify=True`.
     """
+    return await _catalog_state(
+        config, _read_active_pointer(CatalogPaths.from_config(config)), verify=verify
+    )
+
+
+async def _catalog_state(
+    config: Config, pointer: _ActivePointer, *, verify: bool = False
+) -> CatalogState:
     paths = CatalogPaths.from_config(config)
-    snapshot_id = _read_pointer(paths)
+    snapshot_id = pointer.snapshot_id
     if snapshot_id is None:
         return CatalogState(
             status=CatalogStatus.MISSING,

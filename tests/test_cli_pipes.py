@@ -54,7 +54,7 @@ def closed_pipe(
 )
 def test_closed_stdout_exits_quietly(argv, unbuffered) -> None:
     result = closed_pipe(
-        f"raise SystemExit(cli.main({argv!r}))",
+        f"raise SystemExit(cli._entrypoint({argv!r}))",
         stream="stdout",
         unbuffered=unbuffered,
     )
@@ -65,7 +65,7 @@ def test_closed_stdout_exits_quietly(argv, unbuffered) -> None:
 @pytest.mark.parametrize("unbuffered", [False, True])
 def test_usage_error_with_closed_stderr_preserves_status(unbuffered) -> None:
     result = closed_pipe(
-        "raise SystemExit(cli.main(['unknown-command']))",
+        "raise SystemExit(cli._entrypoint(['unknown-command']))",
         stream="stderr",
         unbuffered=unbuffered,
     )
@@ -84,7 +84,7 @@ async def run(args):
     cli._print_stderr('another lost diagnostic')
     return {status}
 cli._run = run
-raise SystemExit(cli.main(['url', 'part', '3001']))
+raise SystemExit(cli._entrypoint(['url', 'part', '3001']))
 """,
         stream="stderr",
         unbuffered=unbuffered,
@@ -101,7 +101,7 @@ async def run(args):
     cli._print_stdout('buffered output')
     return {status}
 cli._run = run
-raise SystemExit(cli.main(['url', 'part', '3001']))
+raise SystemExit(cli._entrypoint(['url', 'part', '3001']))
 """,
         stream="stdout",
     )
@@ -133,7 +133,7 @@ async def run(args):
     cli._print_stderr('lost diagnostic')
     return 0
 cli._run = run
-raise SystemExit(cli.main(['url', 'part', '3001']))
+raise SystemExit(cli._entrypoint(['url', 'part', '3001']))
 """,
         stream=stream,
         unbuffered=unbuffered,

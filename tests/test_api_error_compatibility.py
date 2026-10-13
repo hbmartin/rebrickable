@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import pickle
+from copy import copy, deepcopy
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -153,3 +154,30 @@ def test_exception_state_restores_metadata_without_changing_fields() -> None:
     assert error.__notes__ == ["restored context"]
     assert error == ApiError(*_VALUES)
     assert error.args == _VALUES
+
+
+@pytest.mark.parametrize("error_type", [*_ERROR_TYPES, ApiDecodeError])
+@pytest.mark.parametrize("copier", [copy, deepcopy])
+def test_current_exception_copies_preserve_fields_and_notes(error_type, copier) -> None:
+    error = (
+        ApiDecodeError(
+            path_template="/parts/",
+            operation_id="parts",
+            detail="invalid",
+            payload="private payload",
+        )
+        if error_type is ApiDecodeError
+        else error_type(*_VALUES)
+    )
+    error.add_note("context")
+    restored = copier(error)
+    assert type(restored) is error_type
+    assert restored is not error
+    assert restored == error
+    assert restored.args == error.args
+    assert restored.__notes__ == error.__notes__
+    assert hash(restored) == hash(error)
+    assert (restored.__notes__ is error.__notes__) is (copier is copy)
+    with pytest.raises(FrozenInstanceError):
+        restored.detail = "changed"
+    assert not hasattr(restored, "payload")

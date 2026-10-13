@@ -246,7 +246,7 @@ def test_broken_pipe_exits_quietly(
     duplicate.side_effect = OSError if failure == "duplicate" else None
     close_descriptor.side_effect = OSError if failure == "close" else None
 
-    assert main(["url", "part", "3001"]) == 0
+    assert cli._entrypoint(["url", "part", "3001"]) == 0
     assert capsys.readouterr() == ("", "")
     stdout.fileno.assert_called_once_with()
     stdout.write.assert_called_once_with("output")
@@ -299,6 +299,7 @@ cli.os = SimpleNamespace(
     devnull=os.devnull, O_WRONLY=os.O_WRONLY,
     open=allocate, dup2=os.dup2, close=os.close,
 )
+token = cli._output_state.set(cli._OutputState(owned=((sys.stdout, 1),)))
 for _ in range(10):
     cli._silence_stream(sys.stdout)
     sys.stdout.write('discarded output')
@@ -310,6 +311,7 @@ for _ in range(10):
     else:
         raise AssertionError('temporary descriptor leaked')
 assert len(opened) == 10
+cli._output_state.reset(token)
 """,
         ],
         capture_output=True,

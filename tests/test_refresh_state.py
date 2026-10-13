@@ -619,12 +619,20 @@ def test_snapshot_retention_does_not_count_partial_transfers(
 ) -> None:
     paths = CatalogPaths.from_config(catalog_config)
     older = paths.snapshots_dir / "older-snapshot"
+    oldest = paths.snapshots_dir / "oldest-snapshot"
     incoming = paths.snapshots_dir / ".incoming-stale"
     older.mkdir()
+    oldest.mkdir()
     incoming.mkdir()
 
-    _prune_snapshots(paths, "fixture-snapshot", retain=3)
+    _prune_snapshots(
+        paths,
+        "fixture-snapshot",
+        retain=2,
+        history=("fixture-snapshot", older.name, oldest.name),
+    )
 
     assert paths.database_for("fixture-snapshot").is_file()
     assert older.is_dir()
+    assert not oldest.exists()
     assert not incoming.exists()

@@ -54,6 +54,11 @@ async with RebrickableClient(api_key=api_key) as client:
 
 `snapshot_retention` counts confirmed activations in activation order. The
 active pointer records private history without changing version-1 snapshots.
+The pointer-named previous snapshot participates even when its database or
+manifest is unreadable; it ages out as later snapshots activate. If the
+previous database becomes unreadable during refresh, the validated replacement
+can still activate without its cached API mappings. User mappings from YAML
+remain available, and the progress callback reports skipped cache carryover.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed

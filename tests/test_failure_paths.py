@@ -105,12 +105,17 @@ def test_snapshot_prune_ignores_cleanup_failure(
     paths = CatalogPaths.from_config(catalog_config)
     orphan = paths.snapshots_dir / "orphan"
     orphan.mkdir()
+    attempts = []
 
     def denied(_path: Path) -> None:
+        attempts.append(_path)
         raise OSError("busy")
 
     monkeypatch.setattr("rebrickable.refresh.shutil.rmtree", denied)
-    _prune_snapshots(paths, "fixture-snapshot", 1)
+    _prune_snapshots(
+        paths, "fixture-snapshot", 1, history=("fixture-snapshot", "orphan")
+    )
+    assert attempts == [orphan]
     assert orphan.is_dir()
     assert paths.database_for("fixture-snapshot").is_file()
     _prune_snapshots(
