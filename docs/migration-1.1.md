@@ -390,7 +390,14 @@ remain supported. Manifest damage alone does not discard a healthy mapping
 cache. Known activation-path obstructions fail before downloads and are checked
 again under the promotion lock before installing the replacement.
 Pointer reads now use a single regular-file descriptor and nonblocking opens
-where supported. Parent traversal terminates at the root. The final activation
+where supported. Malformed JSON, excessively nested JSON, oversized integers,
+and pointer files above 1 MiB are classified as invalid. The same byte limit is
+checked on the prospective compact pointer, including its final LF, before
+carryover or candidate movement. Exceeding it aborts refresh without changing
+the active snapshot or truncating activation history. Existing pointers above
+that limit require review of their accumulated activation history. Deeply nested
+activation markers preserve uncertain directories without failing pruning.
+Parent traversal terminates at the root. The final activation
 path check runs after carryover and staging movement, immediately before
 installation; uncertain activation failures still preserve possible candidates.
 Raw database verification survives manifest/state classification. Cache-copy
@@ -398,11 +405,18 @@ policy remains unchanged: identity disagreements skip copying, manifest-only
 schema disagreements may preserve verified version-1 mappings, and unsupported
 database schemas skip copying with an accurate reason. Verified unsupported
 versions now report `SCHEMA_MISMATCH` and raise the existing `CatalogSchemaError`
-on opening. Version-1 identity requirements are not applied to unsupported
+on opening, with the found and supported versions in the error when known.
+Version-1 identity requirements are not applied to unsupported
 versions. Manifest identity checks survive other invalid fields and are repeated
 on the attached source after journal recovery. Reuse of healthy verification is
 bound to stable database identity/change metadata and journal/WAL sidecars; a
-changed source is reverified under the promotion lock. Invalid stored UTF-8 and
+signature change triggers verification again under the promotion lock.
+Fresh, signed corruption and unsupported-schema results may be reused within
+that lock; negative results are not reused across downloads. Reuse assumes
+immutable snapshots and cannot guarantee detection of external edits leaving
+identical filesystem signatures, including coarse timestamps. Transactional
+source identity and schema checks remain authoritative before copying mappings.
+Invalid stored UTF-8 and
 definite required-view defects count as structural damage. Missing SQLite modules,
 functions, collations and unclassified schema-probe errors remain operational
 failures; positively identified structural defects permit replacement.
@@ -418,8 +432,12 @@ The opened descriptor is checked before constructing a stream, so directory
 swaps also reject reuse and trigger the existing single fresh download.
 Pointer and archive opens share descriptor ownership rules: cleanup never
 retries a close on a potentially recycled descriptor, and secondary operational
-probe failures remain available in exception notes. Deep pointer JSON is
-classified as invalid without leaking its descriptor.
+probe failures remain available in exception notes. Their streams borrow the
+descriptor throughout construction and cleanup; the enclosing context owns its
+single close. Nofollow opening probes inspect the link itself. Deep pointer JSON
+is classified as invalid without leaking its descriptor. Cache-copy rollback or
+detachment failures are explicitly chained to the original SQLite error, and
+failed cleanup prevents further recovery.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.

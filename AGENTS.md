@@ -244,7 +244,11 @@ update client models, wrappers, docs, and tests as needed. Do not use
   only for a contained source whose resolved path, device/inode, size, modification
   and change times, and journal/WAL signatures still match. Capture signatures
   before and after verification; reverify changed sources under the promotion
-  lock. Identity disagreements still skip cache copying even with other malformed manifest fields or after journal recovery.
+  lock. Only healthy results may be reused across downloads; fresh, signed
+  corruption or unsupported-schema results may also be reused within the same
+  promotion lock. Metadata reuse assumes immutable snapshots and cannot detect
+  arbitrary external edits retaining identical signatures, including coarse
+  timestamps. Identity disagreements still skip cache copying even with other malformed manifest fields or after journal recovery.
   Validate attached source metadata within the copy transaction before inserting
   mappings. Manifest-only schema disagreements may retain verified version-1
   mappings. Unsupported database versions are distinct from corruption and
@@ -266,10 +270,19 @@ update client models, wrappers, docs, and tests as needed. Do not use
   access. Reject obstructed pointer destinations before downloads and recheck
   them under the promotion lock before candidate installation.
   Pointer and archive readers share regular-file opening and ownership rules.
+  Streams borrow descriptors with `closefd=False`; the enclosing context remains
+  their sole owner throughout construction and cleanup. Nofollow opening probes
+  inspect the link itself. Failed cache-copy rollback or detachment must retain
+  the original SQLite exception and explicitly chain the cleanup failure; do not
+  continue recovery after failed cleanup.
   Relinquish ownership before close and never retry a potentially recycled
   descriptor. Preserve secondary probe errors in exception context or notes;
-  opening denial alone does not prove structural damage. Deep pointer JSON
-  is invalid and must release its descriptor.
+  opening denial alone does not prove structural damage. Deep pointer JSON,
+  oversized integers, and pointers above the shared 1 MiB byte limit are invalid
+  and must release their descriptors. Read at most that limit plus one byte.
+  Check the exact prospective pointer encoding, including its final LF, before
+  carryover or candidate movement; never truncate activation provenance to fit.
+  Deep activation-marker JSON is invalid and must not interrupt pruning.
   Pointer reads use a single regular-file descriptor and nonblocking opens
   where supported. Check descriptors before wrapping cached-file streams.
   Parent traversal must stop at the root, and the final destination check

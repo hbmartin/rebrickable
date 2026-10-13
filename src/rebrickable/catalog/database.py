@@ -74,6 +74,7 @@ class _ActivePointer:
         return value if isinstance(value, str) and _safe_snapshot_id(value) else None
 
 
+_MAX_POINTER_BYTES = 1024 * 1024
 _RESERVED_NAMES = frozenset(
     {
         "CON",
@@ -167,7 +168,7 @@ def _snapshot_contained(paths: CatalogPaths, snapshot_id: str) -> bool:
 def _open_regular_file(
     path: Path, *, nofollow: bool = False
 ) -> Generator[tuple[BinaryIO, os.stat_result] | None, None, None]:
-    """Own one bounded open, preserving opening errors unless damage is confirmed."""
+    """Own one regular-file descriptor, preserving unconfirmed opening failures."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     if nofollow:
         flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -175,7 +176,7 @@ def _open_regular_file(
         descriptor = os.open(path, flags)
     except OSError as exc:
         try:
-            metadata = path.stat()
+            metadata = path.stat(follow_symlinks=not nofollow)
         except OSError as probe_error:
             if _structural_path_error(probe_error):
                 raise probe_error from exc
@@ -191,8 +192,9 @@ def _open_regular_file(
         if not stat.S_ISREG(metadata.st_mode):
             yield None
             return
-        handle = os.fdopen(descriptor, "rb")
-        descriptor = -1  # The stream now owns the descriptor.
+        # Stream construction can close its raw layer before raising. Keep
+        # descriptor ownership here throughout construction and stream cleanup.
+        handle = os.fdopen(descriptor, "rb", closefd=False)
         try:
             yield handle, metadata
         except BaseException:
@@ -219,14 +221,20 @@ def _read_active_pointer(paths: CatalogPaths) -> _ActivePointer:
         with _open_regular_file(paths.active_pointer) as opened:
             if opened is None:
                 return _ActivePointer(snapshot_id="")
-            data = json.loads(opened[0].read().decode("utf-8"))
+            handle, metadata = opened
+            if metadata.st_size > _MAX_POINTER_BYTES:
+                return _ActivePointer(snapshot_id="")
+            payload = handle.read(_MAX_POINTER_BYTES + 1)
+            if len(payload) > _MAX_POINTER_BYTES:
+                return _ActivePointer(snapshot_id="")
+            data = json.loads(payload.decode("utf-8"))
     except FileNotFoundError:
         return _ActivePointer(snapshot_id=None)
     except OSError as exc:
         return _ActivePointer(
             snapshot_id="", error=None if _structural_path_error(exc) else exc
         )
-    except (UnicodeError, json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):
         return _ActivePointer(snapshot_id="")
     snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else None
     try:
@@ -310,11 +318,21 @@ class _DatabaseVerification:
 
 
 def _verification_reusable(
-    verification: _DatabaseVerification | None, database: Path
+    verification: _DatabaseVerification | None,
+    database: Path,
+    *,
+    allow_stable_negative: bool = False,
 ) -> bool:
     if (
         verification is None
-        or verification.status is not _VerificationStatus.HEALTHY
+        or (
+            verification.status is not _VerificationStatus.HEALTHY
+            and not (
+                allow_stable_negative
+                and verification.status
+                in {_VerificationStatus.CORRUPT, _VerificationStatus.INCOMPATIBLE}
+            )
+        )
         or verification.signature is None
     ):
         return False
@@ -774,6 +792,11 @@ async def open_catalog(config: Config) -> tuple[aiosqlite.Connection, CatalogSta
     try:
         state = await catalog_state(config, verify=True)
         if state.status is CatalogStatus.SCHEMA_MISMATCH:
+            if state.schema_version is not None:
+                raise CatalogSchemaError(
+                    f"catalog schema version {state.schema_version} does not match "
+                    f"supported version {SCHEMA_VERSION}"
+                )
             raise CatalogSchemaError("catalog schema does not match this release")
         if state.status is CatalogStatus.UNREADABLE:
             detail = "; ".join(state.diagnostics)

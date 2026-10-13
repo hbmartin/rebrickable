@@ -102,7 +102,10 @@ asyncio.run(main())
   Verification distinguishes structural damage from unavailable SQLite features
   and unsupported schemas, which report a schema-specific status. Healthy
   verification is reused only while the database and journal/WAL signatures
-  remain unchanged. Existing cache-copy rules remain unchanged; see the
+  remain unchanged. Reuse assumes immutable snapshots; external edits that leave
+  identical filesystem signatures may go undetected. Active pointers are limited
+  to 1 MiB, and promotion checks that limit before moving a candidate. Existing
+  cache-copy rules remain unchanged; see the
   [refresh guidance](https://hbmartin.github.io/rebrickable/quickstart/) for metadata disagreements and safe
   cached-file reuse.
 - **Typed API v3 client.** 63 operations from the vendored OpenAPI document,

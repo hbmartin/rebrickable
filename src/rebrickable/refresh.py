@@ -26,6 +26,7 @@ from rebrickable._atomic import durable_replace
 from rebrickable._workers import acquire_lock, run_in_thread
 from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import (
+    _MAX_POINTER_BYTES,
     CatalogPaths,
     _CacheEligibility,
     _catalog_metadata,
@@ -83,7 +84,7 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
             handle.flush()
@@ -283,8 +284,8 @@ def _copy_crosswalk(
                 connection.rollback()
                 if attached:
                     connection.execute("DETACH DATABASE previous")
-            except BaseException:  # noqa: BLE001 - cleanup must preserve the original failure, including during cancellation
-                raise exc from None
+            except BaseException as cleanup_error:
+                raise exc from cleanup_error
             code = getattr(exc, "sqlite_errorcode", 0)
             if not _copy_source_failure(exc):
                 raise
@@ -297,8 +298,6 @@ def _copy_crosswalk(
                 if verification.status is _VerificationStatus.RECOVERY_REQUIRED:
                     verification = _verify_database(previous, recover_hot_journal=True)
                 if verification.status is _VerificationStatus.HEALTHY:
-                    if reason := eligibility.reason(verification):
-                        return reason
                     continue
             if verification.status in {
                 _VerificationStatus.CORRUPT,
@@ -420,7 +419,7 @@ def _managed_snapshot(path: Path, generation: str | None) -> bool:
         return False
     try:
         marker = json.loads((path / _ACTIVATION_MARKER).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return False
     return marker == {"generation": generation}
 
@@ -508,6 +507,20 @@ def _promote_snapshot(
                 )
             )
         )
+        pointer_payload = {
+            "snapshot_id": destination.name,
+            "_activation_generation": generation,
+            "_activation_history": history,
+        }
+        # Match _atomic_json's compact UTF-8 encoding and final LF exactly.
+        pointer_bytes = (
+            json.dumps(pointer_payload, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        if len(pointer_bytes) > _MAX_POINTER_BYTES:
+            raise CatalogImportError(
+                "active snapshot pointer exceeds the 1 MiB limit; "
+                "review accumulated snapshot activation history"
+            )
         previous = None
         skipped_cache = None
         if pointer.activation_id is not None:
@@ -524,7 +537,9 @@ def _promote_snapshot(
                 verification = (
                     source_verification
                     if source_verification is not None
-                    and _verification_reusable(source_verification, source)
+                    and _verification_reusable(
+                        source_verification, source, allow_stable_negative=True
+                    )
                     else _verify_database(source)
                 )
                 if verification.status is _VerificationStatus.OPERATIONAL_FAILURE:
@@ -553,14 +568,7 @@ def _promote_snapshot(
         shutil.move(staging, incoming)
         _check_pointer_destination(paths)
         durable_replace(incoming, destination)
-        _atomic_json(
-            paths.active_pointer,
-            {
-                "snapshot_id": destination.name,
-                "_activation_generation": generation,
-                "_activation_history": history,
-            },
-        )
+        _atomic_json(paths.active_pointer, pointer_payload)
         _prune_snapshots(
             paths,
             destination.name,
