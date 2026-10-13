@@ -122,11 +122,17 @@ returns a meaningful exit code (`0` ok, `1` unexpected/output failure,
 `2` invalid input, `3` missing data,
 `4` incomplete translation, `5` API failure).
 
-When a stdout consumer closes early, the CLI exits quietly with `0`, preserving
-any nonzero status already computed. A closed stderr drops further diagnostics
-while the command continues with stdout and its own exit status. Other failures
-writing or flushing command output, such as a full disk, return `1`. Help and
-version output retain `0`; usage errors retain `2`, even when output fails.
+An interrupted stdout pipe exits quietly with `0`, preserving any nonzero
+status already selected. Closed stderr drops further diagnostics. Other
+command-output failures, including encoding errors, return `1`; encoding
+failures preserve previously buffered output. Help/version retain `0` and usage
+errors retain `2` despite output failures.
+
+Embedded `cli.main()` calls return a status and leave host streams open without
+redirecting descriptors. The host owns shutdown cleanup for failed borrowed
+streams; otherwise Python may report a flush error and override the process
+status at exit. For standalone execution, use the installed `rebrickable`
+command or `python -m rebrickable.cli`, which handle original-stream cleanup.
 
 | Command                 | Purpose                                             |
 | ----------------------- | --------------------------------------------------- |
@@ -147,12 +153,6 @@ Use global `--format table|json|csv|yaml`; legacy per-command `--json` and BOM o
 translation `--csv` flags remain supported. `search` exposes all catalog
 filters, including recursive subtheme matching and offsets.
 
-An interrupted stdout pipe preserves a command status selected before output,
-otherwise exiting quietly with `0`. Other command-output failures, including
-encoding errors, return `1`; encoding failures preserve previously buffered
-output. Help/version and usage retain their parser statuses. Embedded calls to
-`cli.main()` leave all host streams open and never redirect their descriptors.
-The installed executable handles failed original streams at process shutdown.
 
 ## Live API v3
 

@@ -353,7 +353,9 @@ validation and translation failures. Other command-output failures return `1`.
 Encoding failures preserve previously buffered output. Help/version and usage
 exits preserve their parser statuses. Failed diagnostics do not interrupt
 commands. Embedded `cli.main()` calls leave every host stream open and never
-redirect it; executable entry points own process shutdown cleanup.
+redirect it; the host must handle failed borrowed streams before shutdown.
+The returned status does not prevent a later interpreter flush error. Use the
+installed CLI or module execution for standalone scripts.
 
 Private activation history now determines snapshot retention. Existing pointers
 and version-1 databases/manifests remain readable. Uncertain legacy directories
@@ -361,7 +363,12 @@ are preserved outside the retention count; review them before manual deletion.
 A safely identified pointer target participates in retention even when its
 catalog is unreadable. Refresh can repair corruption detected during cache
 carryover by activating the validated replacement without cached API mappings;
-YAML user mappings remain available.
+YAML user mappings remain available. Hot rollback journals are recovered
+under the promotion lock during explicit refresh, preserving committed cached
+mappings. Other catalog reads stay read-only. Operational access or storage
+failures abort refresh rather than discarding a potentially healthy cache.
+All pointer readers reject unsafe names and paths escaping the snapshot
+boundary; ordinary safe legacy snapshot identifiers remain supported.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.

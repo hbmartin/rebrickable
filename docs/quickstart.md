@@ -59,6 +59,11 @@ manifest is unreadable; it ages out as later snapshots activate. If the
 previous database becomes unreadable during refresh, the validated replacement
 can still activate without its cached API mappings. User mappings from YAML
 remain available, and the progress callback reports skipped cache carryover.
+During explicit refresh, a hot SQLite rollback journal is recovered under the
+promotion lock before copying cached mappings. Ordinary catalog reads remain
+read-only. Temporary access failures, resource exhaustion, and storage errors
+abort refresh and preserve the active pointer and mappings; they are not proof
+of catalog corruption.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed

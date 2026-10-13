@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import sqlite3
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
@@ -27,7 +26,7 @@ from rebrickable.bridge.models import (
     TranslationReport,
 )
 from rebrickable.bridge.overrides import read_overrides, write_overrides
-from rebrickable.catalog.database import CatalogPaths
+from rebrickable.catalog.database import CatalogPaths, _read_pointer
 from rebrickable.errors import OptionalDependencyError
 from rebrickable.types import MappingStatus
 
@@ -424,12 +423,8 @@ def _delete_override(
 
 
 def _active_database(paths: CatalogPaths) -> Path | None:
-    try:
-        pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
-        snapshot_id = pointer["snapshot_id"]
-    except (OSError, UnicodeError, KeyError, TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(snapshot_id, str) or not snapshot_id:
+    snapshot_id = _read_pointer(paths)
+    if not snapshot_id:
         return None
     database = paths.database_for(snapshot_id)
     return database if database.is_file() else None

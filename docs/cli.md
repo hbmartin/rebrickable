@@ -40,7 +40,11 @@ parser status `0` when output fails. Encoding failures preserve and flush
 previously encoded output. Embedded calls to `cli.main()` never close or
 redirect any host stream, including the original stdout/stderr. The installed
 executable and `python -m rebrickable.cli` handle shutdown cleanup for failed
-original process streams. A Windows EINVAL is treated as a pipe interruption
+original process streams. Embedded hosts must handle failed borrowed streams
+before interpreter shutdown; the returned status cannot prevent a later Python
+flush error from overriding the process exit status. Use either executable
+form for standalone execution. Diagnostic encoding failures do not suppress
+encodable stdout when both roles share a stream. A Windows EINVAL is treated as a pipe interruption
 only when the stream's descriptor identifies a pipe.
 
 Search accepts year, theme, recursive-subtheme (requires `--theme-id`),

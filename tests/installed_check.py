@@ -134,7 +134,7 @@ def _check_closed_pipe(
             command,
             stdout=writer if stream == "stdout" else subprocess.PIPE,
             stderr=writer if stream == "stderr" else subprocess.PIPE,
-            env={**os.environ, "PYTHONUNBUFFERED": "1" if unbuffered else "0"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1" if unbuffered else ""},
             timeout=15,
             check=False,
         )

@@ -11,11 +11,12 @@ from typing import Any
 
 import pytest
 
-from rebrickable import CatalogState, Config
+from rebrickable import Config
 from rebrickable import refresh as module
 from rebrickable.catalog.database import (
     CatalogPaths,
     _ActivePointer,
+    _CatalogInspection,
     _read_active_pointer,
 )
 from rebrickable.refresh import (
@@ -195,8 +196,7 @@ def test_markers_and_missing_snapshot_directory(
 async def test_promotion_verifies_only_changed_active_snapshot(
     catalog_config: Config, monkeypatch: pytest.MonkeyPatch, *, changed: bool
 ) -> None:
-    original = module._catalog_state
-    original_initial = module.catalog_state
+    original = module._inspect_catalog
     original_pointer = module._read_active_pointer
     calls = []
     sources = snapshot_sources(catalog_config)
@@ -207,21 +207,16 @@ async def test_promotion_verifies_only_changed_active_snapshot(
             paths.snapshots_dir / "replacement",
         )
 
-    async def initial(config, *, verify=False) -> CatalogState:
-        calls.append(verify)
-        return await original_initial(config, verify=verify)
-
     def pointer(paths) -> _ActivePointer:
-        if changed:
+        if changed and calls:
             _atomic_json(paths.active_pointer, {"snapshot_id": "replacement"})
         return original_pointer(paths)
 
-    async def counted(config, pointer, *, verify=False) -> CatalogState:
+    async def counted(config, pointer, *, verify=False) -> _CatalogInspection:
         calls.append(verify)
         return await original(config, pointer, verify=verify)
 
-    monkeypatch.setattr(module, "catalog_state", initial)
-    monkeypatch.setattr(module, "_catalog_state", counted)
+    monkeypatch.setattr(module, "_inspect_catalog", counted)
     monkeypatch.setattr(module, "_read_active_pointer", pointer)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     await refresh_catalog(catalog_config)
@@ -283,3 +278,25 @@ async def test_failed_deletion_stays_in_history_for_next_promotion(
     monkeypatch.setattr(module.shutil, "rmtree", original)
     report = await refresh_catalog(config)
     assert {path.name for path in paths.snapshots_dir.iterdir()} == {report.snapshot_id}
+
+
+def test_pruning_preserves_inaccessible_targets_for_retry(
+    catalog_config, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    orphan = paths.snapshots_dir / "managed-orphan"
+    orphan.mkdir()
+    _atomic_json(orphan / _ACTIVATION_MARKER, {"generation": "generation"})
+    original = module._snapshot_contained
+
+    def contained(paths, snapshot_id) -> bool:
+        if snapshot_id == orphan.name:
+            raise PermissionError("temporarily inaccessible")
+        return original(paths, snapshot_id)
+
+    monkeypatch.setattr(module, "_snapshot_contained", contained)
+    _prune_snapshots(paths, "fixture-snapshot", 1, generation="generation")
+    assert orphan.exists()
+    monkeypatch.setattr(module, "_snapshot_contained", original)
+    _prune_snapshots(paths, "fixture-snapshot", 1, generation="generation")
+    assert not orphan.exists()

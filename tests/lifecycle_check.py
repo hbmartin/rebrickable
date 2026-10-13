@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -76,27 +77,34 @@ async def check_close(config: Config, *, cancel: bool) -> None:
 
 
 async def check_verification(config: Config) -> None:
-    factory = aiosqlite.connect
-    opened: list[aiosqlite.Connection] = []
+    factory = sqlite3.connect
+    opened = []
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def connect(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
-        connection = factory(*args, **kwargs)
+    class Connection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.closed = False
+
+        def execute(self, sql: str) -> sqlite3.Cursor:
+            if sql == "PRAGMA quick_check":
+                loop.call_soon_threadsafe(started.set)
+                if not release.wait(5):
+                    raise TimeoutError("verification worker was not released")
+            return self.connection.execute(sql)
+
+        def close(self) -> None:
+            self.connection.close()
+            self.closed = True
+
+    def connect(*args: Any, **kwargs: Any) -> Connection:
+        connection = Connection(factory(*args, **kwargs))
         opened.append(connection)
-        connector = connection._connector
-
-        def delayed() -> Any:
-            loop.call_soon_threadsafe(started.set)
-            if not release.wait(5):
-                raise TimeoutError("verification worker was not released")
-            return connector()
-
-        connection._connector = delayed
         return connection
 
-    with patch.object(aiosqlite, "connect", connect):
+    with patch.object(sqlite3, "connect", connect):
         task = asyncio.create_task(open_catalog(config))
         try:
             await asyncio.wait_for(started.wait(), 5)
@@ -118,8 +126,7 @@ async def check_verification(config: Config) -> None:
         else:
             raise AssertionError("verification did not propagate cancellation")
     assert len(opened) == 1
-    assert opened[0]._connection is None
-    assert not opened[0]._thread.is_alive()
+    assert opened[0].closed
     with FileLock(CatalogPaths.from_config(config).lock_file, timeout=0):
         pass
     async with await RebrickableSession.connect(config) as session:

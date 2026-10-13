@@ -4,7 +4,7 @@ import asyncio
 import json
 import shutil
 import sqlite3
-from collections.abc import Generator, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -578,29 +578,19 @@ async def test_catalog_verification_rejects_failed_quick_check(
     monkeypatch: pytest.MonkeyPatch,
     result: tuple[str] | None,
 ) -> None:
-    cursor = AsyncMock(spec=aiosqlite.Cursor)
-    cursor.fetchone.return_value = result
-
-    class Connection:
-        execute = AsyncMock(return_value=cursor)
-        close = AsyncMock()
-
-        def __await__(self) -> Generator[None, None, Connection]:
-            async def opened() -> Connection:
-                return self
-
-            return opened().__await__()
-
-    connection = Connection()
+    connection = MagicMock(spec=sqlite3.Connection)
+    connection.execute.return_value.fetchone.return_value = result
     connect = MagicMock(return_value=connection)
-    monkeypatch.setattr("rebrickable.catalog.database.aiosqlite.connect", connect)
+    monkeypatch.setattr("rebrickable.catalog.database.sqlite3.connect", connect)
 
     state = await catalog_state(catalog_config, verify=True)
     assert state.status is CatalogStatus.UNREADABLE
     assert state.diagnostics == ("SQLite quick_check failed",)
-    connection.execute.assert_awaited_once_with("PRAGMA quick_check")
-    cursor.fetchone.assert_awaited_once()
-    connection.close.assert_awaited_once()
+    assert connection.execute.call_args_list == [
+        (("PRAGMA query_only = ON",),),
+        (("PRAGMA quick_check",),),
+    ]
+    connection.close.assert_called_once()
     assert connect.call_args.kwargs == {"uri": True}
     assert connect.call_args.args[0].endswith("?mode=ro")
 
