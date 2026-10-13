@@ -213,13 +213,28 @@ def test_external_journal_recovery_allows_one_copy_retry(
     error = sqlite3.OperationalError("rollback needed")
     error.sqlite_errorcode = sqlite3.SQLITE_READONLY_ROLLBACK
     connection = Mock(spec=sqlite3.Connection)
-    connection.execute.side_effect = [error, error if repeats else None, None]
+    connection.execute.side_effect = [
+        error,
+        error if repeats else None,
+        None,
+        None,
+        None,
+    ]
     verify = Mock(
         return_value=database._DatabaseVerification(
             status=database._VerificationStatus.HEALTHY
         )
     )
     monkeypatch.setattr(refresh_module, "_verify_database", verify)
+    monkeypatch.setattr(
+        refresh_module,
+        "_catalog_metadata",
+        Mock(
+            return_value=database._DatabaseVerification(
+                status=database._VerificationStatus.HEALTHY
+            )
+        ),
+    )
     if repeats:
         with pytest.raises(sqlite3.OperationalError):
             refresh_module._copy_crosswalk(connection, previous)

@@ -100,7 +100,9 @@ asyncio.run(main())
   pointer only after schema, cross-file reference, FTS, row-count, and SQLite
   integrity checks pass. A failed refresh leaves the previous snapshot active.
   Verification distinguishes structural damage from unavailable SQLite features
-  and unsupported schemas. Existing cache-copy rules remain unchanged; see the
+  and unsupported schemas, which report a schema-specific status. Healthy
+  verification is reused only while the database and journal/WAL signatures
+  remain unchanged. Existing cache-copy rules remain unchanged; see the
   [refresh guidance](https://hbmartin.github.io/rebrickable/quickstart/) for metadata disagreements and safe
   cached-file reuse.
 - **Typed API v3 client.** 63 operations from the vendored OpenAPI document,
@@ -130,11 +132,13 @@ An interrupted stdout pipe exits quietly with `0`, preserving any nonzero
 status already selected. Closed stderr drops further diagnostics. Other
 command-output failures, including encoding errors, return `1`; encoding
 failures preserve previously buffered output. Help/version retain `0` and usage
-errors retain `2` despite output failures.
+errors retain `2` despite output failures. Operational parser-output failures
+are diagnosed when stderr remains writable.
 Failed diagnostics preserve the command status even when stderr shares stdout.
 Pending stdout is flushed before diagnostics on a shared stream. A failure
 flushing that output follows the stdout policy; failures confined to later
-diagnostics preserve the command status. Shared streams are finalized once,
+diagnostics preserve the command status. Shared streams are finalized after
+the last diagnostic, so buffered error messages are delivered before return,
 and each distinct operational stdout failure is reported once with its write
 or flush context, including a flush failure after an encoding error.
 

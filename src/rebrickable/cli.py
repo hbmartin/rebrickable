@@ -69,6 +69,7 @@ class _StreamState:
     pipe: bool = False
     write_failed: dict[str, BaseException] = field(default_factory=dict)
     pending_stdout: bool = False
+    flushed: bool = False
     finalized: bool = False
 
 
@@ -198,6 +199,7 @@ def _write_stdout(value: str | bytes, *, status: int = ExitCode.OK) -> None:
         item = _stream_state(stream)
         if item is not None and value:
             item.pending_stdout = True
+            item.flushed = False
     except (AttributeError, OSError, ValueError) as exc:
         pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
         _fail_stream(stream, exc, role="stdout", pipe=pipe_closed)
@@ -223,6 +225,8 @@ def _write_stderr(message: str) -> None:
         if stream.closed or _stream_failure(stream, role="stderr", writing=True):
             return
         stream.write(message)
+        if item is not None and message:
+            item.flushed = False
     except (AttributeError, OSError, ValueError) as exc:
         _fail_stream(
             stream,
@@ -249,6 +253,8 @@ def _flush_stream(
         if item.finalized:
             return
         item.finalized = finalizing
+        if item.flushed:
+            return
         # A write already established the physical failure. Reclassifying it
         # here would duplicate diagnostics or blame stderr failures on stdout.
         if _stream_failure(stream, role=role):
@@ -261,6 +267,7 @@ def _flush_stream(
         stream.flush()
         if item is not None:
             item.pending_stdout = False
+            item.flushed = True
     except (AttributeError, OSError, ValueError) as exc:
         pipe_closed = isinstance(exc, OSError) and _is_broken_pipe(exc, stream)
         _fail_stream(stream, exc, role=role, operation="flush", pipe=pipe_closed)
@@ -805,9 +812,10 @@ def _main(argv: list[str] | None, *, owned: tuple[tuple[IO[str], int], ...]) -> 
 
     finally:
         try:
-            _flush_stream(sys.stdout, role="stdout")
-            if output.stdout_errors and parser_exit is None:
-                status = int(ExitCode.UNEXPECTED)
+            _flush_stream(sys.stdout, role="stdout", finalizing=False)
+            if output.stdout_errors:
+                if parser_exit is None:
+                    status = int(ExitCode.UNEXPECTED)
                 for failure in output.stdout_errors:
                     if not failure.reported:
                         failure.reported = True
@@ -815,6 +823,7 @@ def _main(argv: list[str] | None, *, owned: tuple[tuple[IO[str], int], ...]) -> 
                             f"unable to {failure.operation} stdout: {failure.error}"
                         )
             _flush_stream(sys.stderr, role="stderr")
+            _flush_stream(sys.stdout, role="stdout")
         finally:
             _output_state.reset(token)
     if parser_exit is not None:

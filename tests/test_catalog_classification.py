@@ -113,9 +113,9 @@ async def test_unsupported_schema_has_distinct_copy_exclusion(
         if version == "2"
         else database._VerificationStatus.CORRUPT
     )
-    assert (
-        await database.catalog_state(catalog_config, verify=True)
-    ).status is CatalogStatus.UNREADABLE
+    assert (await database.catalog_state(catalog_config, verify=True)).status is (
+        CatalogStatus.SCHEMA_MISMATCH if version == "2" else CatalogStatus.UNREADABLE
+    )
     events = []
     monkeypatch.setattr(module, "_download_one", downloader(sources))
     report = await module.refresh_catalog(catalog_config, callback=events.append)
