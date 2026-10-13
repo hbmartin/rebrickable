@@ -434,7 +434,7 @@ def test_aliased_diagnostic_only_failure_preserves_status(
 
     monkeypatch.setattr(cli, "_run", run)
     assert cli.main(["url", "part", "3001"]) == status
-    stream.flush.assert_not_called()
+    assert stream.flush.call_count == int(stdout_first)
     stream.close.assert_not_called()
 
 

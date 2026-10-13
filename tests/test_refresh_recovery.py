@@ -76,7 +76,7 @@ async def test_corruption_during_refresh_recovers_and_reports_skipped_cache(
     events = []
 
     async def corrupt_before_promotion(
-        config, pointer, *, verify=False
+        config, pointer, *, verify=False, verification=None
     ) -> CatalogState:
         if not verify:
             database = paths.database_for("fixture-snapshot")
@@ -88,7 +88,7 @@ async def test_corruption_during_refresh_recovers_and_reports_skipped_cache(
                 database.write_bytes(
                     b"" if damage == "empty" else b"corrupted after verification"
                 )
-        return await original(config, pointer, verify=verify)
+        return await original(config, pointer, verify=verify, verification=verification)
 
     monkeypatch.setattr(module, "_inspect_catalog", corrupt_before_promotion)
     monkeypatch.setattr(module, "_download_one", downloader(sources))

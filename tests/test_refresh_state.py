@@ -316,9 +316,6 @@ async def test_promotion_uses_current_snapshot_and_protects_it_from_orphans(
     )
     with closing(sqlite3.connect(paths.database_for(previous_id))) as connection:
         connection.execute(
-            "UPDATE snapshot_meta SET value=? WHERE key='snapshot_id'", (previous_id,)
-        )
-        connection.execute(
             "INSERT INTO api_crosswalk_cache VALUES (?, ?, ?, ?, ?, ?, ?)",
             ("part", "ldraw", "newly-cached", "3001", "op", "2026-08-01", "abc"),
         )

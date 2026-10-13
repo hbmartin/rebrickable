@@ -212,9 +212,11 @@ async def test_promotion_verifies_only_changed_active_snapshot(
             _atomic_json(paths.active_pointer, {"snapshot_id": "replacement"})
         return original_pointer(paths)
 
-    async def counted(config, pointer, *, verify=False) -> _CatalogInspection:
+    async def counted(
+        config, pointer, *, verify=False, verification=None
+    ) -> _CatalogInspection:
         calls.append(verify)
-        return await original(config, pointer, verify=verify)
+        return await original(config, pointer, verify=verify, verification=verification)
 
     monkeypatch.setattr(module, "_inspect_catalog", counted)
     monkeypatch.setattr(module, "_read_active_pointer", pointer)

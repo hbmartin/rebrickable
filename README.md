@@ -128,9 +128,10 @@ command-output failures, including encoding errors, return `1`; encoding
 failures preserve previously buffered output. Help/version retain `0` and usage
 errors retain `2` despite output failures.
 Failed diagnostics preserve the command status even when stderr shares stdout.
-Shared streams are finalized once; a new flush failure affects the status only
-when the command produced stdout on that stream. Operational stdout failures
-are reported once.
+Pending stdout is flushed before diagnostics on a shared stream. A failure
+flushing that output follows the stdout policy; failures confined to later
+diagnostics preserve the command status. Shared streams are finalized once,
+and operational stdout failures are reported once.
 
 Embedded `cli.main()` calls return a status and leave host streams open without
 redirecting descriptors. The host owns shutdown cleanup for failed borrowed

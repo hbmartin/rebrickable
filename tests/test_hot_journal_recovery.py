@@ -76,10 +76,12 @@ async def test_refresh_recovers_hot_journal_without_losing_mappings(
         crash_writer(previous)
     original = module._inspect_catalog
 
-    async def inspect(config, pointer, *, verify=False) -> _CatalogInspection:
+    async def inspect(
+        config, pointer, *, verify=False, verification=None
+    ) -> _CatalogInspection:
         if when == "during" and not verify:
             crash_writer(previous)
-        return await original(config, pointer, verify=verify)
+        return await original(config, pointer, verify=verify, verification=verification)
 
     monkeypatch.setattr(module, "_inspect_catalog", inspect)
     monkeypatch.setattr(module, "_download_one", downloader(sources))
