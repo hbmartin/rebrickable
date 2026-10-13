@@ -193,7 +193,9 @@ update client models, wrappers, docs, and tests as needed. Do not use
   Keep diagnostic encoding suppression separate from stdout suppression when
   roles share a stream. Track physical stream failure separately from its role:
   diagnostic-only failures preserve status, shared streams finalize once, and
-  operational stdout errors are reported once. Global `--format` appears before the subcommand; legacy
+  pending stdout flushes before diagnostics on aliased streams so buffered
+  output failures retain stdout attribution. Operational stdout errors are
+  reported once. Global `--format` appears before the subcommand; legacy
   local JSON/CSV flags remain compatibility surfaces.
 - `src/rebrickable/config.py` and `src/rebrickable/dirs.py` own configuration
   loading, secret persistence rules, and platform-specific paths.
@@ -228,6 +230,12 @@ update client models, wrappers, docs, and tests as needed. Do not use
   verify the closed version-1 schema allowlist and snapshot metadata in addition
   to quick_check. A generic Windows access-denied error alone is not structural
   evidence. Hot-journal diagnostics must explain explicit refresh recovery.
+  Classify errors from the closed required-schema probe separately from
+  connection failures. Logical database/manifest identity is independent of
+  directory naming; preserve intact renamed/restored snapshots and legacy
+  manifests without an identity field. Manifest damage alone must not discard
+  a safely contained, verified database mapping cache. Preserve every original
+  exception when cleanup also fails.
   Permissions, resource exhaustion, contention, ambiguous I/O, and candidate
   storage failures must abort refresh rather than discard cached mappings.
 - Reuse cached archives only through contained, stable regular-file handles and
@@ -235,6 +243,11 @@ update client models, wrappers, docs, and tests as needed. Do not use
   one unconditional download; operational read/write failures must abort.
   Do not add a redundant gzip-validation scan. Preserve uncertain historical
   paths and activation provenance for cleanup retries outside retention slots.
+  Reject length mismatches before copying and use nonblocking cached-file opens
+  where supported before requiring a stable regular descriptor. Keep parsed
+  activation provenance when containment fails; it never authorizes unsafe
+  access. Reject obstructed pointer destinations before downloads and recheck
+  them under the promotion lock before candidate installation.
 - Resolve every active pointer through shared identifier and containment checks,
   including bridge writers. Reject traversal, Windows filename aliases/reserved
   names, and links escaping the snapshot boundary before database access.

@@ -68,6 +68,12 @@ Structural snapshot damage, including missing files, nonregular contents and
 symlink loops, permits replacement. Verification checks the required version-1
 schema and snapshot identity as well as SQLite integrity. A hot-journal
 diagnostic recommends explicit refresh; ordinary reads never repair it.
+The directory name locates the snapshot; logical identity belongs to database
+metadata and the manifest when present. An intact snapshot may be copied or
+renamed with its pointer updated without rewriting matching logical identities.
+Manifest damage does not by itself discard a safely contained, verified mapping
+cache. An obstructed active-pointer destination fails before downloads, and
+promotion checks it again before installing the candidate.
 Legacy directories with unknown activation history and ambiguous candidates
 are preserved outside that count, so disk use can exceed the configured limit
 until those directories are reviewed and cleaned up manually. New managed
@@ -81,3 +87,6 @@ byte length and SHA256. Contained links are supported. Missing, unsafe or change
 archives trigger one fresh request without conditional headers. Operational
 source-read or staging-write failures abort refresh. Reused archives follow the
 normal header and import validation; no additional gzip scan is performed.
+Length mismatches are rejected before copying. Cached-file opens reject
+nonregular replacements without blocking on a FIFO where the platform supports
+nonblocking opens.

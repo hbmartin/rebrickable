@@ -27,6 +27,7 @@ from rebrickable.bridge.overrides import materialize_overrides
 from rebrickable.catalog.database import (
     CatalogPaths,
     _copy_source_failure,
+    _database_contained,
     _inspect_catalog,
     _read_active_pointer,
     _read_only_uri,
@@ -60,7 +61,7 @@ from rebrickable.types import (
 )
 
 if TYPE_CHECKING:
-    from rebrickable.catalog.database import _ActivePointer
+    from rebrickable.catalog.database import _ActivePointer, _DatabaseVerification
 
 
 def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
@@ -84,6 +85,35 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _check_pointer_destination(paths: CatalogPaths) -> None:
+    """Reject obstructions before building a replacement that cannot activate."""
+    try:
+        parent = paths.active_pointer.parent
+        while True:
+            try:
+                metadata = parent.stat()
+            except FileNotFoundError:
+                if parent.is_symlink():
+                    raise NotADirectoryError(
+                        f"pointer parent is a dangling link: {parent}"
+                    ) from None
+                parent = parent.parent
+                continue
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise NotADirectoryError(f"pointer parent is not a directory: {parent}")
+            break
+        try:
+            metadata = paths.active_pointer.lstat()
+        except FileNotFoundError:
+            return
+        if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+            raise OSError(
+                f"active pointer cannot replace non-file: {paths.active_pointer}"
+            )
+    except OSError as exc:
+        raise CatalogImportError(f"unable to activate catalog: {exc}") from exc
 
 
 async def _download_one(
@@ -164,9 +194,14 @@ def _reuse_archive(
         if approved is None:
             return False
         resolved, metadata = approved
+        if metadata.st_size != previous.byte_length:
+            return False
         descriptor = os.open(
             resolved,
-            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
     except OSError as exc:
         if _structural_path_error(exc):
@@ -243,7 +278,10 @@ def _copy_crosswalk(connection: sqlite3.Connection, previous: Path) -> bool:
             if not _copy_source_failure(exc):
                 raise
             verification = _verify_database(previous)
-            if code == sqlite3.SQLITE_READONLY_ROLLBACK and not retried:
+            if not retried and (
+                code == sqlite3.SQLITE_READONLY_ROLLBACK
+                or verification.status is _VerificationStatus.RECOVERY_REQUIRED
+            ):
                 retried = True
                 if verification.status is _VerificationStatus.RECOVERY_REQUIRED:
                     verification = _verify_database(previous, recover_hot_journal=True)
@@ -301,15 +339,18 @@ def _carry_crosswalk(previous: Path | None, candidate: Path) -> bool:
     except (OSError, sqlite3.Error) as exc:
         failed = True
         raise CatalogImportError(f"unable to carry mapping cache: {exc}") from exc
+    except BaseException:
+        failed = True
+        raise
     finally:
         if connection is not None:
             if failed:
-                with suppress(OSError, sqlite3.Error):
+                with suppress(BaseException):
                     connection.close()
             else:
                 try:
                     connection.close()
-                except (OSError, sqlite3.Error) as exc:
+                except Exception as exc:
                     raise CatalogImportError(
                         f"unable to close mapping cache: {exc}"
                     ) from exc
@@ -340,12 +381,14 @@ def _activation_history(pointer: _ActivePointer) -> tuple[str, tuple[str, ...]]:
             or not history
             or any(not _safe_snapshot_id(item) for item in history)
             or len(set(history)) != len(history)
-            or pointer.snapshot_id != history[0]
+            or pointer.activation_id != history[0]
         ):
             raise ValueError("invalid activation metadata")
         uuid.UUID(generation)
     except (KeyError, TypeError, ValueError):
-        return uuid.uuid4().hex, (pointer.snapshot_id,) if pointer.snapshot_id else ()
+        return uuid.uuid4().hex, (
+            pointer.activation_id,
+        ) if pointer.activation_id else ()
     return generation, tuple(history)
 
 
@@ -420,23 +463,15 @@ def _promote_snapshot(
     incoming: Path,
     destination: Path,
     pointer: _ActivePointer,
-    copy_cache: bool,
+    source_verification: _DatabaseVerification | None,
     retain: int,
 ) -> bool:
     """Complete promotion while the caller owns and drains the promotion lock."""
     try:
-        previous_id = pointer.snapshot_id or None
-        if previous_id is not None:
-            try:
-                present = stat.S_ISDIR(
-                    (paths.snapshots_dir / previous_id).stat().st_mode
-                )
-            except OSError as exc:
-                if not _structural_path_error(exc):
-                    raise
-                present = False
-            if not present:
-                previous_id = None
+        _check_pointer_destination(paths)
+        previous_id = pointer.activation_id
+        if previous_id is not None and not _history_present(paths, previous_id):
+            previous_id = None
         generation, prior_history = _activation_history(pointer)
         history = tuple(
             dict.fromkeys(
@@ -449,13 +484,36 @@ def _promote_snapshot(
                 )
             )
         )
-        previous = (
-            paths.database_for(previous_id)
-            if previous_id is not None and copy_cache
-            else None
-        )
-        skipped_cache = _carry_crosswalk(
-            previous, staging / paths.configured_database.name
+        previous = None
+        skipped_cache = False
+        if pointer.activation_id is not None:
+            try:
+                safe = _database_contained(paths, pointer.activation_id)
+            except OSError as exc:
+                if not _structural_path_error(exc):
+                    raise CatalogImportError(
+                        f"unable to verify mapping source: {exc}"
+                    ) from exc
+                safe = False
+            if safe:
+                source = paths.database_for(pointer.activation_id)
+                verification = source_verification or _verify_database(source)
+                if verification.status is _VerificationStatus.OPERATIONAL_FAILURE:
+                    raise CatalogImportError(
+                        f"unable to verify mapping source: {verification.error}"
+                    ) from verification.error
+                if verification.status in {
+                    _VerificationStatus.HEALTHY,
+                    _VerificationStatus.RECOVERY_REQUIRED,
+                }:
+                    previous = source
+                else:
+                    skipped_cache = True
+            else:
+                skipped_cache = True
+        skipped_cache = (
+            _carry_crosswalk(previous, staging / paths.configured_database.name)
+            or skipped_cache
         )
         _atomic_json(staging / _ACTIVATION_MARKER, {"generation": generation})
         shutil.move(staging, incoming)
@@ -513,6 +571,7 @@ async def _refresh_attempt(
     callback: ProgressCallback | None,
 ) -> RefreshReport:
     paths = CatalogPaths.from_config(config)
+    await run_in_thread(_check_pointer_destination, paths)
     prior_inspection = await _inspect_catalog(
         config, _read_active_pointer(paths), verify=True
     )
@@ -677,7 +736,14 @@ async def _refresh_attempt(
             ) from exc
         try:
             pointer = _read_active_pointer(paths)
-            inspection = await _inspect_catalog(config, pointer)
+            reusable = (
+                prior_inspection.verification
+                if pointer.snapshot_id == prior_state.snapshot_id
+                and prior_inspection.verification is not None
+                and prior_inspection.verification.status is _VerificationStatus.HEALTHY
+                else None
+            )
+            inspection = await _inspect_catalog(config, pointer, verification=reusable)
             current_state = inspection.state
             if current_state.status is CatalogStatus.READY and (
                 prior_state.status is not CatalogStatus.READY
@@ -689,15 +755,6 @@ async def _refresh_attempt(
                 raise CatalogImportError(
                     f"unable to verify previous catalog: {inspection.error}"
                 ) from inspection.error
-            verification = inspection.verification
-            copy_cache = current_state.status is CatalogStatus.READY or (
-                verification is not None
-                and verification.status is _VerificationStatus.RECOVERY_REQUIRED
-            )
-            known_unreadable = verification is not None and verification.status in {
-                _VerificationStatus.CORRUPT,
-                _VerificationStatus.MISSING,
-            }
             skipped_cache = await run_in_thread(
                 _promote_snapshot,
                 paths,
@@ -705,10 +762,9 @@ async def _refresh_attempt(
                 incoming=incoming,
                 destination=destination,
                 pointer=pointer,
-                copy_cache=copy_cache,
+                source_verification=inspection.verification,
                 retain=config.snapshot_retention,
             )
-            skipped_cache = skipped_cache or known_unreadable
         finally:
             lock.release()
         if skipped_cache:

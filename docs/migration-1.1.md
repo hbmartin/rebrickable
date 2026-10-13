@@ -357,9 +357,10 @@ redirect it; the host must handle failed borrowed streams before shutdown.
 The returned status does not prevent a later interpreter flush error. Use the
 installed CLI or module execution for standalone scripts.
 Diagnostic-only failures retain that status with aliased streams too. Shared
-streams are finalized once; a newly observed shared flush failure counts as
-stdout failure only after stdout output. Operational stdout errors are reported
-once.
+streams flush pending stdout before diagnostics, preserving attribution when
+the diagnostic write would otherwise flush buffered command output. Subsequent
+diagnostic-only failures retain the status. Shared streams are finalized once,
+and operational stdout errors are reported once.
 
 Private activation history now determines snapshot retention. Existing pointers
 and version-1 databases/manifests remain readable. Uncertain legacy directories
@@ -377,12 +378,21 @@ Structural path failures and incomplete or mismatched version-1 schemas permit
 a validated replacement. Hot-journal diagnostics explain the explicit-refresh
 recovery option. Uncertain historical paths keep their activation provenance
 for cleanup retries and do not consume available retention slots.
+Activation provenance survives structural containment failures independently
+of access eligibility. Intact copied or renamed snapshots remain readable when
+their database and manifest retain matching logical identities; update the
+pointer to the directory name. Legacy manifests without an identity field
+remain supported. Manifest damage alone does not discard a healthy mapping
+cache. Known activation-path obstructions fail before downloads and are checked
+again under the promotion lock before installing the replacement.
 
 Cached `304` archives now require contained regular-file identity and matching
 recorded length/SHA256. Unsafe, missing or changed files trigger one
 unconditional download; another `304` fails. Permission, resource or storage
 failures abort refresh instead. Archive bytes remain raw, with normal header
 and import validation.
+Length mismatches fail reuse before copying, and nonblocking opens on supported
+platforms prevent a regular-file-to-FIFO swap from trapping a refresh worker.
 
 Current releases preserve API exception notes during serialization and copying.
 Loading newly saved exceptions into older releases is not guaranteed.

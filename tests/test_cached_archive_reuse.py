@@ -5,10 +5,13 @@ import errno
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import IO, Any
+from unittest.mock import Mock
 
 import httpx2
 import pytest
@@ -349,3 +352,85 @@ def test_reused_inode_with_changed_metadata_is_rejected_before_reading(
         paths, "fixture-snapshot", source.name, destination, previous
     )
     assert not destination.exists()
+
+
+def test_reuse_rejects_length_mismatch_before_open(
+    catalog_config, tmp_path, monkeypatch
+) -> None:
+    paths = CatalogPaths.from_config(catalog_config)
+    previous = next(
+        item
+        for item in asyncio.run(catalog_state(catalog_config)).files
+        if item.dataset == "parts"
+    )
+    source = paths.snapshots_dir / "fixture-snapshot" / "parts.csv.gz"
+    source.write_bytes(b"wrong size")
+    opened = Mock()
+    monkeypatch.setattr(module.os, "open", opened)
+    assert not module._reuse_archive(
+        paths, "fixture-snapshot", source.name, tmp_path / "saved.gz", previous
+    )
+    opened.assert_not_called()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+def test_reuse_fifo_swap_completes_without_reading(catalog_config, tmp_path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import asyncio, os, sys, threading
+from pathlib import Path
+import rebrickable.refresh as module
+from rebrickable.config import Config
+from rebrickable.catalog.database import CatalogPaths, catalog_state
+from rebrickable._workers import run_in_thread
+config = Config(database_path=Path(sys.argv[1]))
+paths = CatalogPaths.from_config(config)
+previous = next(item for item in asyncio.run(catalog_state(config)).files if item.dataset == 'parts')
+original = os.open
+descriptors = []
+opened, release = threading.Event(), threading.Event()
+def swap(path, flags):
+    Path(path).unlink()
+    os.mkfifo(path)
+    descriptor = original(path, flags)
+    descriptors.append(descriptor)
+    opened.set()
+    assert release.wait(5)
+    return descriptor
+module.os.open = swap
+destination = Path(sys.argv[2])
+async def reuse():
+    task = asyncio.create_task(run_in_thread(module._reuse_archive, paths, 'fixture-snapshot', 'parts.csv.gz', destination, previous))
+    assert await asyncio.to_thread(opened.wait, 3)
+    task.cancel()
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert not task.done()
+    release.set()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError('cancellation was lost')
+asyncio.run(reuse())
+assert not destination.exists()
+try:
+    os.fstat(descriptors[0])
+except OSError:
+    pass
+else:
+    raise AssertionError('descriptor leaked')
+""",
+            str(catalog_config.database_path),
+            str(tmp_path / "saved.gz"),
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert result.stderr == b""
