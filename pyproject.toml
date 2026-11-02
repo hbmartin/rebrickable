@@ -50,7 +50,7 @@ dev = [
   "hypothesis>=6.130",
   "pip-audit>=2.9",
   "pyrefly>=0.55",
-  "pyroma621==6.1.0",
+  "pyroma621==6.2.0",
   "pytest>=8.4",
   "pytest-asyncio>=1.1",
   "pytest-cov>=7",
